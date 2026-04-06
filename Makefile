@@ -1,14 +1,17 @@
-.PHONY: help build up down logs clean backend frontend dev install-deps test docker-build docker-push restart shell
+.PHONY: help build up down logs clean backend frontend dev install-deps test docker-build restart shell
+.PHONY: setup dev-backend dev-frontend watch-backend watch-frontend
+.PHONY: logs-backend logs-frontend logs-mongodb logs-ollama
+.PHONY: health-check shell-mongodb shell-ollama
+.PHONY: backend-test clean-docker clean-all update-deps
 
 # Variables
-DOCKER_COMPOSE := docker-compose
+DOCKER_COMPOSE := docker compose
 MAVEN := mvn
 NODE := npm
 JAVA_PORT := 8080
 UI_PORT := 3000
 MONGO_PORT := 27017
 OLLAMA_PORT := 11434
-TEI_PORT := 8081
 
 # Colors for output
 GREEN := \033[0;32m
@@ -32,7 +35,6 @@ help: ## Show this help message
 	@echo "  Next.js UI:   http://localhost:$(UI_PORT)"
 	@echo "  MongoDB:      localhost:$(MONGO_PORT)"
 	@echo "  Ollama:       http://localhost:$(OLLAMA_PORT)"
-	@echo "  TEI Reranker: http://localhost:$(TEI_PORT)"
 
 setup: ## First-time setup (install dependencies)
 	@echo "$(BLUE)Setting up project...$(NC)"
@@ -63,7 +65,6 @@ up: ## Start all services with Docker Compose
 	@echo "  Java API:        $(BLUE)http://localhost:$(JAVA_PORT)$(NC)"
 	@echo "  MongoDB:         $(BLUE)localhost:$(MONGO_PORT)$(NC)"
 	@echo "  Ollama:          $(BLUE)http://localhost:$(OLLAMA_PORT)$(NC)"
-	@echo "  TEI Reranker:    $(BLUE)http://localhost:$(TEI_PORT)$(NC)"
 
 down: ## Stop all services
 	@echo "$(BLUE)Stopping services...$(NC)"
@@ -87,19 +88,16 @@ logs-mongodb: ## View logs from MongoDB only
 logs-ollama: ## View logs from Ollama only
 	$(DOCKER_COMPOSE) logs -f ollama
 
-logs-tei: ## View logs from TEI Reranker only
-	$(DOCKER_COMPOSE) logs -f tei-reranker
-
 health-check: ## Check health of all services
 	@echo "$(YELLOW)Checking service health...$(NC)"
-	@echo -n "MongoDB: "
-	@docker-compose exec -T mongodb-atlas mongosh --eval "db.adminCommand('ping')" > /dev/null 2>&1 && echo "$(GREEN)✓$(NC)" || echo "$(YELLOW)⏳$(NC)"
-	@echo -n "Ollama: "
-	@docker-compose exec -T ollama ollama list > /dev/null 2>&1 && echo "$(GREEN)✓$(NC)" || echo "$(YELLOW)⏳$(NC)"
-	@echo -n "TEI Reranker: "
-	@curl -s http://localhost:$(TEI_PORT)/health > /dev/null 2>&1 && echo "$(GREEN)✓$(NC)" || echo "$(YELLOW)⏳$(NC)"
+	@echo -n "MongoDB:      "
+	@$(DOCKER_COMPOSE) exec -T mongodb-atlas mongosh --eval "db.adminCommand('ping')" > /dev/null 2>&1 && echo "$(GREEN)✓$(NC)" || echo "$(YELLOW)⏳$(NC)"
+	@echo -n "Ollama:       "
+	@$(DOCKER_COMPOSE) exec -T ollama ollama list > /dev/null 2>&1 && echo "$(GREEN)✓$(NC)" || echo "$(YELLOW)⏳$(NC)"
 	@echo -n "Java Backend: "
 	@curl -s http://localhost:$(JAVA_PORT)/actuator/health > /dev/null 2>&1 && echo "$(GREEN)✓$(NC)" || echo "$(YELLOW)⏳$(NC)"
+	@echo -n "Agent UI:     "
+	@curl -s http://localhost:$(UI_PORT) > /dev/null 2>&1 && echo "$(GREEN)✓$(NC)" || echo "$(YELLOW)⏳$(NC)"
 
 shell-mongodb: ## Open MongoDB shell
 	$(DOCKER_COMPOSE) exec mongodb-atlas mongosh

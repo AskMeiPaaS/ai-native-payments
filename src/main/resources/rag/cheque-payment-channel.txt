@@ -1,0 +1,90 @@
+Cheque Payment — Indian Payment Channel Risk & Routing Guide
+
+Overview:
+Cheque is a traditional paper-based payment instrument regulated by the Negotiable Instruments Act, 1881 and RBI guidelines. India uses the CTS (Cheque Truncation System) for electronic clearing since 2010, eliminating physical cheque movement between banks. While usage is declining due to digital payments, cheques remain important for high-value business transactions, government payments, and legal settlements.
+
+Transaction Limits:
+- Minimum: No minimum (any amount can be written)
+- Maximum: No statutory maximum, but banks have per-cheque limits
+- Positive Pay System: Mandatory for cheques of ₹50,000 and above (RBI mandate since Jan 2021)
+- Demand Draft: available as a safer alternative for amounts where cheque dishonour risk is high
+
+Clearing & Settlement:
+- CTS clearing: T+1 (cheque deposited on Day 0, cleared by end of Day 1 in same grid)
+- Inter-grid clearing: T+2 (cheques between different CTS grids)
+- India operates 3 CTS grids: Mumbai (western), New Delhi (northern), Chennai (southern)
+- MICR (Magnetic Ink Character Recognition) code identifies the bank/branch for clearing
+- Positive Pay: drawer must electronically submit cheque details (number, date, payee, amount) to bank before issuance for cheques ≥ ₹50,000
+
+Charges:
+- Cheque book: Free for first set (typically 25–50 leaves/year), ₹2–₹5 per leaf thereafter
+- Cheque deposit: Usually free
+- Cheque dishonour (return): ₹150–₹750 charged to both presenter and drawer
+- Stop payment instruction: ₹50–₹100 per cheque
+
+Risk Profile — Cheques are INHERENTLY HIGH RISK:
+LOW VALUE (₹0 – ₹50,000):
+- Below Positive Pay threshold — higher fraud risk without pre-validation
+- Risk level: MEDIUM-HIGH
+- Recommend UPI or NEFT as safer alternatives for this range
+- If cheque chosen: verify drawer identity, check account balance adequacy
+- Processing: standard CTS clearing, T+1
+
+MEDIUM VALUE (₹50,001 – ₹5,00,000):
+- Positive Pay System applies — drawer must pre-register cheque details
+- Risk level: HIGH
+- Mandatory: match cheque details against Positive Pay record
+- HITL review if: post-dated cheque, first-time drawer, altered cheque appearance
+- Behavioral check: verify cheque issuance pattern matches historical profile
+- Dishonour risk: ~2.5% national average, higher for new relationships
+
+HIGH VALUE (₹5,00,001 – ₹1,00,00,000):
+- Risk level: VERY HIGH
+- Strongly recommend RTGS or NEFT instead
+- If cheque chosen: mandatory HITL review + drawer verification call
+- Demand Draft preferred over cheque for this range (bank-guaranteed)
+- Source-of-funds check for amounts above ₹10,00,000
+- AML screening for amounts above ₹10,00,000
+
+VERY HIGH VALUE (above ₹1,00,00,000):
+- Risk level: CRITICAL
+- Cheque NOT recommended — use RTGS
+- If insisted: multi-level approval, legal verification, drawer in-person verification
+- Mandatory compliance officer review
+- Full KYC re-verification of drawer
+
+Trusted Partner Framework for Cheque:
+- Tier 1 (Established — 20+ cleared cheques, zero dishonour, 1+ year): accept up to ₹5L without HITL
+- Tier 2 (Regular — 5–19 cleared cheques, <2% dishonour rate): accept up to ₹2L, HITL above
+- Tier 3 (New or poor history — <5 cheques or dishonour rate >2%): HITL review for all cheques above ₹25,000
+- Blacklisted drawers (3+ dishonours in 12 months): reject all cheques, recommend digital payment
+
+Dishonour & Legal Consequences:
+- Section 138 of Negotiable Instruments Act: cheque dishonour due to insufficient funds is a criminal offence
+- Payee can file complaint within 30 days of dishonour notice receipt
+- Penalty: imprisonment up to 2 years OR fine up to twice the cheque amount, or both
+- Civil suit can also be filed for recovery
+- Repeated dishonour leads to bank account restrictions and CIBIL impact
+
+When to Recommend Cheque:
+- Legal/court-ordered payments where cheque is mandated
+- Government payments (certain departments still require cheque)
+- When payee does not have bank account for electronic transfer (rare)
+- Post-dated cheques for EMI arrangements (though ECS/NACH is preferred)
+- When paper trail with physical signature is legally required
+
+When to DISCOURAGE Cheque:
+- Any transaction where UPI, NEFT, or RTGS is available
+- Urgent payments (T+1 clearing delay)
+- Transactions with unknown/untrusted parties
+- High-value transactions (use RTGS instead)
+- Cross-city transactions (use NEFT/RTGS for speed)
+
+Fraud Patterns Specific to Cheque:
+- Cheque forgery: signature falsification, altered payee name or amount
+- Cheque kiting: exploiting float time between deposit and clearing
+- Cheque washing: chemical alteration of payee or amount using solvents
+- Counterfeit cheques: entirely fabricated cheque leaves
+- Post-dating abuse: issuing cheques with future dates with intent to default
+- Account closure: drawer closes account after issuing cheque
+Mitigation: Positive Pay verification, MICR validation, signature matching (AI-based), drawer history analysis, CTS image comparison

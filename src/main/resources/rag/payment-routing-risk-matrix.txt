@@ -1,0 +1,151 @@
+Indian Payment Routing Decision Matrix — Risk Profile, Amount & Trusted Partner Based
+
+This document guides the PaSS Orchestrator Agent in recommending the optimal payment channel based on three factors: (1) transaction amount, (2) user/counterparty risk profile, and (3) trusted partner tier.
+
+═══════════════════════════════════════════════════════════════
+SECTION 1: AMOUNT-BASED PRIMARY CHANNEL RECOMMENDATION
+═══════════════════════════════════════════════════════════════
+
+₹0 – ₹500:
+  Primary: UPI Lite (instant, no PIN needed)
+  Fallback: UPI, Cash
+  Notes: UPI Lite maximum ₹500/txn, ₹2,000 wallet balance
+
+₹501 – ₹10,000:
+  Primary: UPI (instant, zero cost)
+  Fallback: NEFT (if UPI unavailable), Cash (discouraged for business)
+  Notes: Section 40A(3) — business cash above ₹10,000 not deductible
+
+₹10,001 – ₹50,000:
+  Primary: UPI (instant, zero cost)
+  Fallback: NEFT (half-hourly batch)
+  Avoid: Cash (PAN required above ₹50K, tax implications)
+  Notes: Most banks support UPI up to ₹1L
+
+₹50,001 – ₹1,00,000:
+  Primary: UPI (within standard ₹1L limit)
+  Fallback: NEFT (no amount cap, free online)
+  Avoid: Cash (PAN mandatory, SFT reporting applies)
+  Notes: PAN documentation needed for cash in this range
+
+₹1,00,001 – ₹2,00,000:
+  Primary: NEFT (free online, no upper limit)
+  Alternative: UPI (only for verified merchants — ₹2L P2M limit)
+  Avoid: Cash (ILLEGAL above ₹2L under Section 269ST)
+  Notes: Cash receipt above ₹2L attracts 100% penalty
+
+₹2,00,001 – ₹5,00,000:
+  Primary: NEFT (free online, batch settlement)
+  Alternative: UPI (only for tax/IPO/hospital/education — ₹5L enhanced limit)
+  Business urgent: RTGS (minimum ₹2L, real-time)
+  Prohibited: Cash
+
+₹5,00,001 – ₹25,00,000:
+  Primary: RTGS (real-time, finality guaranteed)
+  Alternative: NEFT (if non-urgent)
+  Notes: AML screening mandatory above ₹10L
+
+Above ₹25,00,000:
+  Primary: RTGS (real-time gross settlement, no upper limit)
+  Notes: Multi-level authorization, compliance officer review for very large amounts
+  Mandatory: AML/CFT screening, source-of-funds documentation
+
+═══════════════════════════════════════════════════════════════
+SECTION 2: RISK PROFILE MODIFIER
+═══════════════════════════════════════════════════════════════
+
+Risk profiles modify the base channel recommendation:
+
+LOW RISK PROFILE (Behavioral Score ≥ 0.95):
+- Apply standard amount-based routing above
+- Auto-approve within trusted partner limits
+- Minimal additional verification
+- Suitable for: established customers, repeat transactions, known patterns
+
+MEDIUM RISK PROFILE (Behavioral Score 0.80 – 0.94):
+- Apply standard routing but add monitoring flags
+- Reduce auto-approve thresholds by 50%
+- Enable extended audit logging
+- Suitable for: regular customers with occasional anomalies
+
+HIGH RISK PROFILE (Behavioral Score 0.60 – 0.79):
+- Downgrade channel: prefer NEFT over UPI (settlement delay allows intervention)
+- HITL review for transactions above ₹25,000
+- Enhanced device and geo-fence verification
+- Block UPI for new beneficiaries until profile improves
+- Suitable for: customers with anomalies, new device, geo-mismatch
+
+CRITICAL RISK PROFILE (Behavioral Score < 0.60):
+- HITL mandatory for ALL transactions regardless of amount
+- Block high-value channels (RTGS, high-value NEFT)
+- Limit UPI to ₹10,000 per transaction
+- Recommend customer re-verification (KYC refresh)
+- Mandatory STR filing if suspicious patterns detected
+
+═══════════════════════════════════════════════════════════════
+SECTION 3: TRUSTED PARTNER TIER ADJUSTMENT
+═══════════════════════════════════════════════════════════════
+
+Partner tiers provide auto-approval thresholds that override HITL escalation:
+
+TIER 1 — ESTABLISHED PARTNER:
+Criteria: 50+ successful transactions, 1+ year relationship, zero fraud incidents, KYC current
+  UPI auto-approve: up to ₹1,00,000
+  NEFT auto-approve: up to ₹5,00,000
+  RTGS auto-approve: up to ₹10,00,000
+  Cheque auto-accept: up to ₹5,00,000
+  Cash auto-accept: up to ₹50,000
+
+TIER 2 — REGULAR PARTNER:
+Criteria: 10–49 transactions, 3+ months, <1% dispute rate, KYC current
+  UPI auto-approve: up to ₹50,000
+  NEFT auto-approve: up to ₹2,00,000
+  RTGS auto-approve: up to ₹5,00,000
+  Cheque auto-accept: up to ₹2,00,000
+  Cash auto-accept: up to ₹20,000
+
+TIER 3 — NEW PARTNER:
+Criteria: <10 transactions or <3 months relationship
+  UPI auto-approve: up to ₹25,000
+  NEFT auto-approve: up to ₹1,00,000
+  RTGS: HITL required for all transactions
+  Cheque: HITL required above ₹25,000
+  Cash: HITL required above ₹10,000
+
+UNVERIFIED / HIGH RISK PARTNER:
+Criteria: No transaction history, failed KYC, or prior fraud flags
+  ALL channels: HITL mandatory for any transaction above ₹5,000
+  RTGS: blocked
+  Cheque: blocked
+  Cash: limited to ₹2,000
+
+═══════════════════════════════════════════════════════════════
+SECTION 4: COMBINED DECISION RULES
+═══════════════════════════════════════════════════════════════
+
+Rule 1 — Legal Compliance Override:
+  Cash above ₹2,00,000: ALWAYS REJECT (Section 269ST)
+  Cash deposit above ₹50,000 without PAN: ALWAYS REJECT
+  RTGS below ₹2,00,000: ALWAYS REJECT (below minimum)
+
+Rule 2 — Risk × Amount Escalation:
+  If (risk_score < 0.80) AND (amount > ₹50,000): mandatory HITL
+  If (risk_score < 0.60): mandatory HITL regardless of amount
+  If first_transaction AND amount > ₹25,000: mandatory HITL
+
+Rule 3 — Channel Availability Fallback:
+  If UPI unavailable → NEFT → RTGS (if above ₹2L) → Cheque (last resort)
+  If NEFT unavailable → RTGS (if above ₹2L) → UPI (if within limit)
+  System downtime: queue for retry, notify user of expected delay
+
+Rule 4 — Speed Priority:
+  Urgent + ₹2L+: RTGS (real-time, minutes)
+  Urgent + under ₹1L: UPI (instant)
+  Non-urgent any amount: NEFT (up to 2 hours)
+  Paper trail needed: Cheque (T+1 clearing)
+
+Rule 5 — Cost Optimization:
+  All digital channels: zero cost for savings account online transactions
+  RTGS offline/branch: ₹25–₹50 per transaction
+  Cheque: free but dishonour penalty risk ₹150–₹750
+  Cash: hidden costs (PAN compliance, reporting, tax implications)

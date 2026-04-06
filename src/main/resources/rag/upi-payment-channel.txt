@@ -1,0 +1,60 @@
+UPI (Unified Payments Interface) — Indian Payment Channel Risk & Routing Guide
+
+Overview:
+UPI is India's real-time mobile payment system developed by NPCI (National Payments Corporation of India), regulated by RBI. It enables instant peer-to-peer (P2P) and peer-to-merchant (P2M) fund transfers 24x7x365 using a Virtual Payment Address (VPA). Two-factor authentication via UPI PIN ensures transaction security.
+
+Transaction Limits (as of 2024–2025):
+- Standard P2P transfer: ₹1,00,000 per transaction
+- Verified merchant (P2M) payments: ₹2,00,000 per transaction (since April 2020)
+- Capital markets / insurance / foreign inward remittances: ₹2,00,000 per transaction
+- IPO subscriptions / RBI Retail Direct: ₹5,00,000 per transaction
+- Tax payments (direct & indirect): ₹5,00,000 per transaction (enhanced Aug 2024)
+- Hospital & educational institution payments: ₹5,00,000 per transaction (enhanced Dec 2023)
+- UPI Lite (small-value wallet): ₹500 per transaction, ₹2,000 wallet limit, no PIN required
+- UPI AutoPay recurring mandate: ₹1,00,000 per debit (enhanced from ₹15,000)
+- Daily limit: ₹1,00,000 aggregate across all P2P transactions
+- Daily transaction count: 20 via bank apps, 10 via third-party apps (Google Pay, PhonePe, Paytm)
+
+Settlement: Instant (real-time), settled through NPCI switch
+Charges: Zero for end users. No MDR on P2M transactions (government subsidy)
+Availability: 24x7x365 including bank holidays
+
+Risk Profile by Transaction Tier:
+LOW RISK (₹0 – ₹10,000):
+- Suitable for all risk profiles and new users
+- UPI Lite eligible for transactions under ₹500 (no PIN, fastest)
+- Minimal fraud monitoring required
+- Auto-approve for trusted partners with score ≥ 0.80
+
+MEDIUM RISK (₹10,001 – ₹1,00,000):
+- Standard UPI limit, requires UPI PIN authentication
+- Behavioral similarity check recommended (threshold 0.85)
+- Flag if: new device, unusual time-of-day, geo-anomaly
+- Trusted partner auto-approve threshold: score ≥ 0.90
+
+HIGH RISK (₹1,00,001 – ₹2,00,000):
+- Only available for verified merchant payments (P2M)
+- Enhanced monitoring: velocity check + device fingerprint + geo-fence
+- HITL escalation if behavioral score < 0.92
+- New mandate holders: mandatory HITL review
+- Trusted partner auto-approve threshold: score ≥ 0.95
+
+ENHANCED CATEGORY (₹2,00,001 – ₹5,00,000):
+- Restricted to: tax payments, IPO, hospital, education
+- MCC (Merchant Category Code) validation required
+- Mandatory audit logging for every transaction
+- HITL review recommended regardless of trust score for first-time high-value
+
+Trusted Partner Framework for UPI:
+- Tier 1 (Established — 50+ successful transactions, 6+ months): auto-approve up to ₹1L
+- Tier 2 (Regular — 10–49 transactions, 3+ months): auto-approve up to ₹50,000
+- Tier 3 (New — <10 transactions or <3 months): HITL review above ₹25,000
+- Partner trust decay: score reduces by 0.02/month if no activity for 90+ days
+
+Fraud Patterns Specific to UPI:
+- QR code tampering: malicious QR codes redirect payments to fraudster accounts
+- Collect request scam: fraudster sends collect request pretending to be refund
+- SIM swap attack: attacker takes over the registered mobile number
+- Fake UPI apps: phishing apps that capture UPI PIN
+- Velocity attack: rapid-fire small transactions to drain account before detection
+Mitigation: device binding, real-time velocity monitoring, collect request validation

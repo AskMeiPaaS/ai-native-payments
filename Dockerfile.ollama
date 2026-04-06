@@ -1,0 +1,21 @@
+# Ollama LLM Engine
+# Serves LLM model via Ollama API
+# Models are downloaded on first container startup via entrypoint script  
+# Available models: neural-chat, llama2, mistral, orca-mini (or customize via LLM_MODEL_NAME)
+FROM ollama/ollama:latest
+
+# Update system packages to patch OS-level vulnerabilities
+RUN apt-get update && apt-get upgrade -y && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Copy entrypoint script that handles model download on startup
+COPY scripts/ollama-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Environment configuration
+# Default model: deepseek-r1 (advanced reasoning model with function calling support)
+# Override with: docker run -e LLM_MODEL_NAME=neural-chat ...
+ENV LLM_MODEL_NAME=deepseek-r1:1.5b
+ENV OLLAMA_HOST=0.0.0.0:11434
+
+# Use custom entrypoint for reliable model loading
+ENTRYPOINT ["/entrypoint.sh"]

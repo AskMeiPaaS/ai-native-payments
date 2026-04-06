@@ -1,0 +1,53 @@
+# --- Target & Build ---
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+# --- AI & Environment Secrets ---
+# CRITICAL: Do not commit your Voyage AI or OpenAI keys
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+
+# --- Spring Boot & Logs ---
+*.log
+logs/
+.spring-boot-devtools-plugin.data
+help.md
+
+# --- OS & IDE Metadata ---
+.DS_Store
+Thumbs.db
+.idea/
+*.iml
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+.nb-gradle/
+
+# --- Local Infrastructure ---
+# If you run a local MongoDB data volume
+/data/db/
+dump/
+
+# --- Next.js / Node.js (Frontend) ---
+# Preparing for Phase 3
+node_modules/
+.next/
+out/
+build/
+.vercel
+*.tsbuildinfo

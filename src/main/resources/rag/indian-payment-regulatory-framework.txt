@@ -1,0 +1,132 @@
+Indian Payment Systems Regulatory Framework — RBI & NPCI Compliance Guide
+
+This document provides the regulatory context that the PaSS Orchestrator Agent must consider when processing Indian payment transactions.
+
+═══════════════════════════════════════════════════════════════
+REGULATORY BODIES
+═══════════════════════════════════════════════════════════════
+
+Reserve Bank of India (RBI):
+- India's central bank, regulator of all payment systems under Payment and Settlement Systems Act, 2007
+- Regulates: NEFT, RTGS, cheque clearing, prepaid instruments, cross-border payments
+- Key departments: DPSS (Department of Payment and Settlement Systems), DoR (Department of Regulation)
+
+National Payments Corporation of India (NPCI):
+- Umbrella organization for operating retail payment systems in India
+- Operates: UPI, IMPS, NACH, RuPay, BBPS (Bharat Bill Payment System), FASTag, AePS
+- Established by RBI and Indian Banks Association (IBA)
+
+FIU-IND (Financial Intelligence Unit - India):
+- Receives and analyzes CTR (Cash Transaction Reports), STR (Suspicious Transaction Reports)
+- Reports to Ministry of Finance
+
+═══════════════════════════════════════════════════════════════
+KEY REGULATIONS FOR PAYMENT TRANSACTIONS
+═══════════════════════════════════════════════════════════════
+
+1. Prevention of Money Laundering Act (PMLA), 2002:
+- KYC mandatory for all bank account holders
+- Customer Due Diligence (CDD) for transactions above thresholds
+- Enhanced Due Diligence (EDD) for politically exposed persons (PEPs)
+- Record retention: 5 years after account closure or transaction
+
+2. Payment and Settlement Systems Act, 2007:
+- RBI has exclusive authority over payment system regulation
+- Authorization required for operating any payment system
+- Settlement finality: once settled through RTGS/NEFT, transaction is irrevocable
+
+3. Information Technology Act, 2000 & RBI Cyber Security Framework:
+- Two-factor authentication mandatory for all electronic payments
+- Data localization: payment data must be stored in India (RBI circular April 2018)
+- Incident reporting: payment system operators must report cyber incidents within 6 hours
+
+4. RBI Master Direction on KYC (2016, updated):
+- Aadhaar-based e-KYC, Video-KYC, CKYC (Central KYC Registry)
+- Periodic KYC update mandatory (every 2 years for high-risk, 10 years for low-risk)
+- Simplified KYC (Small Accounts): limited functionality, max balance ₹50,000, max annual credits ₹1,00,000
+
+5. RBI Digital Lending Guidelines (2022):
+- All loan disbursements must be to borrower's bank account
+- Direct cash disbursement prohibited for regulated entities
+- Fee transparency and cooling-off period mandatory
+
+═══════════════════════════════════════════════════════════════
+TRANSACTION REPORTING THRESHOLDS
+═══════════════════════════════════════════════════════════════
+
+Cash Transaction Report (CTR) — Monthly to FIU-IND:
+- Individual: all cash transactions above ₹10,00,000 (₹10 lakh) in a month
+- Non-individual: all cash transactions above ₹50,00,000 (₹50 lakh) in a month
+- Integrally connected transactions that individually are below threshold but aggregate above
+
+Suspicious Transaction Report (STR):
+- No threshold — any transaction that gives reasonable suspicion
+- Must be filed within 7 days of determination
+- Includes: unusual pattern, inconsistent with customer profile, no economic rationale
+- Covers all channels: cash, UPI, NEFT, RTGS, cheque
+
+Counterfeit Currency Report (CCR):
+- All counterfeit notes detected must be reported to RBI and police
+- Monthly reporting to FIU
+
+Statement of Financial Transactions (SFT) — Annual to Income Tax:
+- Savings account: aggregate deposits > ₹10,00,000 in a financial year
+- Current account: aggregate deposits > ₹50,00,000 in a financial year
+- Fixed deposit: aggregate > ₹10,00,000 in a financial year
+- Credit card: payment > ₹1,00,000 in cash or ₹10,00,000 aggregate
+
+═══════════════════════════════════════════════════════════════
+UPI-SPECIFIC REGULATIONS
+═══════════════════════════════════════════════════════════════
+
+- NPCI circular: P2P limit ₹1,00,000/transaction, P2M verified merchant ₹2,00,000
+- Enhanced limits: ₹5,00,000 for tax, IPO, hospital, education (RBI approved)
+- UPI AutoPay: mandate limit ₹1,00,000 (enhanced from ₹15,000)
+- Dispute resolution: TAT (Turn Around Time) for failed transactions:
+  - Beneficiary not credited: auto-reversal within T+5 working days
+  - Penalty: ₹100/day to customer if reversal delayed beyond T+5
+- UPI fraud liability: zero liability if reported within 3 working days
+
+═══════════════════════════════════════════════════════════════
+NEFT/RTGS-SPECIFIC REGULATIONS
+═══════════════════════════════════════════════════════════════
+
+- NEFT: 24x7, batch settlement in half-hourly cycles, no minimum/maximum
+- RTGS: 24x7, real-time gross settlement, minimum ₹2,00,000
+- Both: zero charges for savings accounts on online/electronic channels (RBI mandate)
+- Failed NEFT/RTGS: credit back within 2 hours of batch/settlement failure
+- Positive Pay System: mandatory for NEFT/RTGS transactions above ₹50,000 (RBI guideline)
+
+═══════════════════════════════════════════════════════════════
+CHEQUE-SPECIFIC REGULATIONS
+═══════════════════════════════════════════════════════════════
+
+- CTS (Cheque Truncation System): electronic clearing, T+1 settlement
+- Positive Pay: mandatory for cheques ≥ ₹50,000 (since Jan 2021)
+- Validity: 3 months from date of issue (revised from 6 months, effective April 2012)
+- Section 138 NI Act: dishonour for insufficient funds is criminal offence (up to 2 years imprisonment)
+- Stale cheque: cheque not presented within validity period cannot be cleared
+
+═══════════════════════════════════════════════════════════════
+CASH-SPECIFIC REGULATIONS
+═══════════════════════════════════════════════════════════════
+
+- Section 269ST: receipt of ₹2,00,000+ in cash is prohibited (100% penalty)
+- Section 194N: TDS 2% on cash withdrawal above ₹1 crore/year (5% if ITR not filed, above ₹20L)
+- Section 269SS/269T: loan/deposit above ₹20,000 cannot be in cash
+- Section 40A(3): business expense above ₹10,000 in cash not deductible
+- PAN mandatory: cash transactions above ₹50,000 in single instance
+- Demonetization legacy: enhanced surveillance on large cash movements
+
+═══════════════════════════════════════════════════════════════
+CROSS-CUTTING COMPLIANCE RULES FOR PaSS AGENT
+═══════════════════════════════════════════════════════════════
+
+1. Always validate transaction against channel-specific limits before execution
+2. Apply AML screening for all transactions above ₹10,00,000 (any channel)
+3. File STR for any transaction with behavioral score < 0.60 or unusual pattern
+4. Maintain complete audit trail: timestamp, channel, amount, parties, device, IP, decision, reasoning
+5. Data retention: minimum 5 years for all transaction records (PMLA requirement)
+6. Consent: explicit customer consent required before mandate creation or modification
+7. Grievance redressal: provide escalation path (bank → banking ombudsman → RBI) for all disputed transactions
+8. The agent must never reveal internal fraud scores or detection methods to the end user

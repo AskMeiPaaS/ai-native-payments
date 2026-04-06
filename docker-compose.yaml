@@ -1,0 +1,111 @@
+services:
+  # 1. Java 21 LangChain4j Orchestrator
+  api-gateway:
+    hostname: api-gateway
+    container_name: api-gateway
+    image: ai-native-payments-api-gateway:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PRIMARY_MONGO_URI=${PRIMARY_MONGO_URI}
+      - AUDIT_MONGO_URI=${AUDIT_MONGO_URI}
+      - HITL_MONGO_URI=${HITL_MONGO_URI}
+      - MEMORY_MONGO_URI=${MEMORY_MONGO_URI}
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - EMBEDDING_MODEL_NAME=${EMBEDDING_MODEL_NAME}
+      - RERANKER_MODEL_NAME=${RERANKER_MODEL_NAME}
+      - RERANKER_TOP_K=${RERANKER_TOP_K}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS}
+      - HTTP_CONNECT_TIMEOUT=${HTTP_CONNECT_TIMEOUT}
+      - HTTP_REQUEST_TIMEOUT=${HTTP_REQUEST_TIMEOUT}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://agent-ui:3000}
+    depends_on:
+      mongodb-atlas:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/actuator/health" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+
+  # 2. Ollama AI Engine — Multi-LLM support (configurable via LLM_MODEL_NAME)
+  ollama:
+    hostname: ollama
+    container_name: ollama
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-0.0.0.0:11434}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-deepseek-r1:1.5b}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}
+      - OLLAMA_NUM_THREAD=${OLLAMA_NUM_THREAD:-8}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:11434/api/tags | grep -q models || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 180
+    restart: unless-stopped
+
+  # 3. MongoDB Local Atlas (Multi-architecture support)
+  mongodb-atlas:
+    image: mongodb/mongodb-atlas-local:latest
+    hostname: mongodb-atlas
+    container_name: mongodb-atlas
+    ports:
+      - "27017:27017"
+    environment:
+      MONGODB_INITDB_ROOT_USERNAME: ${MONGODB_INITDB_ROOT_USERNAME}
+      MONGODB_INITDB_ROOT_PASSWORD: ${MONGODB_INITDB_ROOT_PASSWORD}
+    volumes:
+      - atlas_data:/data/db
+      - atlas_config:/data/configdb
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # 4. Next.js Agentic UI
+  agent-ui:
+    hostname: agent-ui
+    container_name: agent-ui
+    build:
+      context: ./agent-ui
+      dockerfile: Dockerfile
+      args:
+        JAVA_BACKEND_URL: http://api-gateway:8080
+    ports:
+      - "3000:3000"
+    environment:
+      - JAVA_BACKEND_URL=http://api-gateway:8080
+    depends_on:
+      api-gateway:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  atlas_data:
+  atlas_config:
+  ollama_data:
+
+networks:
+  default:
+    name: ai-native-payments-network
+    driver: bridge

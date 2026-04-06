@@ -1,0 +1,80 @@
+RTGS (Real Time Gross Settlement) — Indian Payment Channel Risk & Routing Guide
+
+Overview:
+RTGS is India's large-value, real-time fund transfer system operated by the Reserve Bank of India. Unlike NEFT (batch-based), RTGS settles transactions individually and instantly on a gross basis. It is the preferred channel for high-value urgent payments, inter-bank settlement, and critical business transactions.
+
+Transaction Limits:
+- Minimum transfer: ₹2,00,000 (mandatory floor set by RBI)
+- Maximum transfer: No upper limit
+- Bank-specific daily limits may apply via net banking (typically ₹25,00,000 to ₹100,00,000 for retail, higher for corporates)
+- Corporate/institutional: limits set per agreement with bank
+
+Settlement: Real-time gross settlement (individual transaction, not batched)
+- Transfer completes within 30 minutes (typically 2–10 minutes)
+- Operating hours: 24x7 since December 14, 2020 (earlier 7 AM – 6 PM on weekdays)
+- Finality: irrevocable once settled — cannot be reversed by sender's bank
+
+Charges (RBI mandated — effective July 2019):
+- Savings account online: ZERO charges (RBI mandated, no fee for online RTGS)
+- Offline / branch-initiated: ₹25 (₹2L–₹5L), ₹50 (above ₹5L) + GST
+- Beneficiary bank: No charges on incoming RTGS
+- Corporate pricing: as per bank agreement, generally ₹20–₹50 per transaction
+
+Required Details:
+- Beneficiary name, bank account number, IFSC code
+- Remitter identification (KYC-compliant bank account)
+- Purpose code for cross-border related settlements
+
+Risk Profile by Transaction Amount:
+HIGH VALUE – STANDARD (₹2,00,000 – ₹10,00,000):
+- Minimum RTGS tier, standard for business payments
+- Beneficiary verification mandatory (name match validation)
+- Behavioral score threshold: ≥ 0.88
+- Trusted partner auto-approve: score ≥ 0.90
+- Suitable for: property advances, vehicle purchases, business vendor payments
+
+HIGH VALUE – ELEVATED (₹10,00,001 – ₹50,00,000):
+- Enhanced due diligence recommended
+- HITL review for first-time beneficiary or new relationship
+- Cross-reference with existing transaction patterns
+- AML screening mandatory (RBI PMLA guidelines)
+- Dual-authorization for corporate accounts
+- Behavioral score threshold: ≥ 0.92
+- Trusted partner auto-approve: score ≥ 0.95
+
+VERY HIGH VALUE (₹50,00,001 – ₹2,00,00,000):
+- Mandatory HITL review regardless of trust score
+- Source-of-funds documentation required
+- AML/CFT (Combating Financing of Terrorism) screening
+- STR (Suspicious Transaction Report) evaluation
+- Senior operator approval required
+- Purpose of payment declaration mandatory
+
+ULTRA HIGH VALUE (above ₹2,00,00,000):
+- Multi-level approval chain: operator → senior → compliance officer
+- Real-time RBI reporting for transactions above ₹10 crore
+- Pre-transaction verification call to remitter (for individual accounts)
+- Must comply with FEMA regulations if cross-border element exists
+- Full audit trail with timestamp, IP, device, and operator ID
+
+Trusted Partner Framework for RTGS:
+- Tier 1 (Established — 10+ successful RTGS, registered entity, 1+ year): auto-approve up to ₹10L
+- Tier 2 (Regular — 3–9 RTGS transfers, 6+ months): auto-approve up to ₹5L
+- Tier 3 (New — <3 RTGS or <6 months): mandatory HITL review for all RTGS transactions
+- Institutional partners: custom thresholds per bilateral agreement with compliance sign-off
+
+When to Recommend RTGS:
+- Any urgent payment of ₹2,00,000 or above
+- Real-time settlement certainty required (property, securities, legal settlements)
+- When NEFT batch delay is unacceptable
+- Large business-to-business payments
+- Merger/acquisition-related fund transfers
+- When irrevocability and finality are required for legal or contractual reasons
+
+Fraud Patterns Specific to RTGS:
+- Business Email Compromise (BEC): sophisticated fraud targeting high-value corporate payments
+- CEO fraud: impersonation of senior executive to authorize urgent RTGS transfer
+- Invoice manipulation: altered bank details on legitimate invoices
+- Settlement timing exploitation: fraudster exploits 24x7 availability during off-hours with reduced monitoring
+- Irrevocability abuse: social engineering to convince victim to send RTGS (cannot be reversed)
+Mitigation: mandatory callback verification for first-time high-value beneficiary, dual-authorization, 4-eyes principle for amounts above ₹50L, real-time AML screening

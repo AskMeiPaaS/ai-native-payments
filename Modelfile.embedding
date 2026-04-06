@@ -1,0 +1,9 @@
+# Voyage-4-nano Embedding Model
+# Architecture : Qwen3 bidirectional (Apache 2.0)
+# Dimensions   : 1024 via Matryoshka Representation Learning (MRL)
+# Source GGUF  : jsonMartin/voyage-4-nano-gguf @ HuggingFace
+#
+# This file is consumed by the Ollama entrypoint script:
+#   ollama create voyage-4-nano -f /Modelfile.embedding
+# The GGUF is downloaded at container startup to /tmp/voyage-4-nano.gguf
+FROM /tmp/voyage-4-nano.gguf

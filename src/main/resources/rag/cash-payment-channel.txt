@@ -1,0 +1,91 @@
+Cash Payment — Indian Payment Channel Risk & Routing Guide
+
+Overview:
+Cash remains a legal tender in India but is increasingly regulated and discouraged for large transactions. The Government of India and RBI have implemented multiple measures to curb high-value cash transactions under the Digital India and demonetization initiatives. Cash transactions above specified thresholds trigger mandatory reporting, TDS deductions, and potential penalties.
+
+Statutory Limits & Regulations (Income Tax Act):
+- Section 269ST: No person shall receive ₹2,00,000 or more in cash in a single transaction, in aggregate from a person in a day, or in respect of a single event/occasion. Penalty: 100% of the amount received.
+- Section 269SS: Loans/deposits of ₹20,000 or more cannot be accepted in cash. Must use bank transfer/cheque/DD.
+- Section 269T: Repayment of loans/deposits of ₹20,000 or more cannot be made in cash.
+- Section 40A(3): Business payments above ₹10,000 in cash are disallowed as business expense (not deductible).
+- Section 194N (TDS on Cash Withdrawal): TDS at 2% on cash withdrawals exceeding ₹1,00,00,000 (₹1 crore) in a financial year. Rate increases to 5% if ITR not filed for past 3 years and withdrawal exceeds ₹20,00,000.
+- Section 13A: Political parties can only receive cash donations up to ₹2,000 per person.
+
+PAN Card Requirements for Cash:
+- Bank deposit above ₹50,000: PAN/Form 60 mandatory
+- Bank deposit above ₹10,00,000 in a year (savings) or ₹50,00,000 (current): reported to Income Tax via SFT
+- Cash payment for goods/services above ₹2,00,000: PAN mandatory
+- Foreign exchange purchase above ₹50,000: PAN mandatory
+- Property registration: cash component not permitted above ₹20,000
+
+Anti-Money Laundering (AML) Triggers:
+- Cash Transaction Report (CTR): Banks must report all cash transactions above ₹10,00,000 (individual) or ₹50,00,000 (business) per month to FIU-IND (Financial Intelligence Unit)
+- Suspicious Transaction Report (STR): Any cash transaction that appears unusual regardless of amount
+- Cross-border cash: declaration mandatory for cash above ₹25,000 (foreign currency) or equivalent at customs
+- Structuring (smurfing): deliberate splitting of cash transactions to avoid reporting thresholds — this itself is a reportable offence
+
+Risk Profile — Cash is the HIGHEST RISK Payment Channel:
+MICRO TRANSACTIONS (₹0 – ₹2,000):
+- Risk level: LOW
+- Acceptable for daily retail purchases, market transactions
+- No regulatory reporting required
+- Common and legitimate in India's informal economy
+- No special documentation needed
+
+SMALL TRANSACTIONS (₹2,001 – ₹10,000):
+- Risk level: LOW-MEDIUM
+- Acceptable but recommend digital alternatives
+- Section 40A(3) threshold: business expense above ₹10,000 in cash not deductible
+- PAN not required but track for aggregate monitoring
+
+MEDIUM TRANSACTIONS (₹10,001 – ₹50,000):
+- Risk level: MEDIUM-HIGH
+- PAN mandatory for bank deposits above ₹50,000
+- Recommend NEFT/UPI strongly as alternative
+- If cash: verify identity, document source of funds
+- HITL review for: unknown parties, irregular frequency
+
+LARGE TRANSACTIONS (₹50,001 – ₹2,00,000):
+- Risk level: HIGH
+- PAN mandatory for all cash transactions in this range
+- SFT reporting if aggregate deposits exceed ₹10L/year
+- Strong recommendation to use electronic payment instead
+- HITL review mandatory
+- Source-of-funds documentation required
+
+PROHIBITED ZONE (above ₹2,00,000):
+- Risk level: CRITICAL — ILLEGAL under Section 269ST
+- Receipt of ₹2,00,000+ in cash is PROHIBITED
+- Penalty: 100% of amount received
+- System MUST reject cash payment options above ₹2,00,000
+- Recommend RTGS, NEFT, or cheque as mandatory alternatives
+- Exception: government receipts, banking companies, post-office savings, cooperative banks as specified by notification
+
+Trusted Partner Framework for Cash:
+- Cash transactions should be DISCOURAGED regardless of trust level
+- Tier 1 partners: may process cash up to ₹50,000 with automatic approval, HITL above
+- Tier 2 partners: HITL review for cash above ₹20,000
+- Tier 3 partners (new/unknown): HITL review for cash above ₹10,000
+- All partners: cash above ₹2,00,000 is REJECTED by system (legal prohibition)
+
+When Cash is Appropriate:
+- Small retail purchases under ₹2,000 in informal economy
+- Rural areas with limited digital infrastructure
+- Emergency situations when digital channels are down
+- Small vendor payments where no digital option exists
+
+When to STRONGLY Discourage Cash:
+- Any business transaction above ₹10,000 (tax deductibility issue)
+- Any transaction above ₹50,000 (PAN/reporting requirements)
+- Loan/deposit transactions above ₹20,000 (Section 269SS/269T)
+- Any transaction above ₹2,00,000 (illegal under 269ST)
+- When digital alternatives (UPI/NEFT/RTGS) are available
+- Cross-border transactions
+
+Fraud & Compliance Patterns for Cash:
+- Structuring (smurfing): breaking large amounts into sub-₹50,000 deposits to avoid PAN requirement
+- Round-tripping: cash deposited → transferred electronically → withdrawn as cash elsewhere
+- Cash couriers: physical movement of large cash amounts across state borders
+- Shell company deposits: cash deposited into shell company accounts to layer illicit funds
+- Demonetization evasion: using multiple accounts to deposit/exchange currency
+Mitigation: aggregate monitoring across accounts, CTR/STR filing, KYC verification, AI-based pattern detection for structuring

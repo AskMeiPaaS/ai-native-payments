@@ -1,0 +1,96 @@
+/* Scrollable transactions container */
+.transactionsContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-right: 8px;
+  scroll-behavior: smooth;
+}
+
+/* Custom scrollbar styling for webkit browsers */
+.transactionsContainer::-webkit-scrollbar {
+  width: 6px;
+}
+
+.transactionsContainer::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 3px;
+}
+
+.transactionsContainer::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+  transition: background 0.2s ease-in-out;
+}
+
+.transactionsContainer::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* Custom scrollbar styling for Firefox */
+.transactionsContainer {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+/* Transaction item hover effect */
+.transactionItem {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  transition: all 0.2s ease-in-out;
+  cursor: default;
+  user-select: none;
+}
+
+.transactionItem:hover {
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  transform: translateX(2px);
+}
+
+/* Transaction details */
+.transactionDetails {
+  flex: 1;
+  min-width: 150px;
+}
+
+.transactionDetails > div:first-child {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.transactionAmount {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.transactionAmount > div:first-child {
+  font-weight: 700;
+}
+
+/* Smooth animation for new transactions */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.transactionItem {
+  animation: slideIn 0.3s ease-out;
+}

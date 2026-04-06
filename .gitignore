@@ -24,6 +24,7 @@ buildNumber.properties
 logs/
 .spring-boot-devtools-plugin.data
 help.md
+NEXT.md
 
 # --- OS & IDE Metadata ---
 .DS_Store

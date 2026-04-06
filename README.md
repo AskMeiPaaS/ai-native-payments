@@ -378,39 +378,6 @@ All secrets live in `.env` (git-ignored). See `.env.example` for the full list w
 MIT — see [LICENSE](LICENSE).
 
 
-**ai-native-payments** is a next-generation financial orchestration engine built for the **RBI Payments Switching Service (PaSS)**.
-
----
-
-## ⚠️ SECURITY DISCLAIMER
-
-> **🛑 REFERENCE IMPLEMENTATION ONLY**
->
-> This is a **demonstration and educational project** for testing purposes. 
->
-> **❌ NOT FOR PRODUCTION USE OR REAL FINANCIAL TRANSACTIONS**
->
-> ### Critical Security Features MISSING:
-> - ❌ **No Authentication/Authorization** — users are not verified
-> - ❌ **No Rate Limiting** — vulnerable to DoS attacks
-> - ❌ **No HTTPS/TLS** — communications not encrypted
-> - ❌ **No CSRF Protection** — susceptible to cross-site attacks
-> - ❌ **No Real Payment Integration** — uses mock data only
-> - ❌ **Uses Demo Credentials** — hardcoded defaults for development
-> - ❌ **Limited Input Validation** — potential injection risks
->
-> ### Before ANY Production Use:
-> 1. ✅ Implement Spring Security with JWT authentication
-> 2. ✅ Add rate limiting and API key management
-> 3. ✅ Enable HTTPS/TLS for all communications
-> 4. ✅ Integrate real payment processor (authorized by RBI)
-> 5. ✅ Conduct security audit and penetration testing
-> 6. ✅ Obtain compliance certification (ISO 27001, PCI-DSS if needed)
-> 7. ✅ Perform code review with security experts
->
-> **See [SECURITY_ASSESSMENT.md](SECURITY_ASSESSMENT.md) for detailed findings.**
-
----
 
 Unlike traditional applications where AI is just a feature, this platform is strictly **AI-Native** and **Responsible by Design**. The application logic is driven dynamically by a **Multi-Agent System (MAS)** that reasons over user intent, continuously authenticates via behavioral telemetry, and autonomously executes banking operations.
 

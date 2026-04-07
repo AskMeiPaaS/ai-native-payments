@@ -14,6 +14,7 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
@@ -71,7 +72,7 @@ public class UserProfileEncryptionService {
 
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv));
-            byte[] ciphertext = cipher.doFinal(plaintext.getBytes("UTF-8"));
+            byte[] ciphertext = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
 
             // Pack: IV || ciphertext+tag
             byte[] packed = ByteBuffer.allocate(iv.length + ciphertext.length)
@@ -110,7 +111,7 @@ public class UserProfileEncryptionService {
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.DECRYPT_MODE, key, new GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv));
             byte[] plainBytes = cipher.doFinal(encData);
-            return new String(plainBytes, "UTF-8");
+            return new String(plainBytes, StandardCharsets.UTF_8);
         } catch (Exception e) {
             log.warn("⚠️ PII decryption failed; returning raw stored value: {}", e.getMessage());
             return ciphertext;

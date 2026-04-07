@@ -52,15 +52,21 @@ function maskEmail(email: string | undefined): string {
   return `${visible}${'•'.repeat(Math.max(3, local.length - 2))}${domain}`;
 }
 
-/** Mask phone: show last 4 digits, e.g. "+91-•••••-•3210" */
+/** Mask phone: show last 4 digits, mask the rest, preserving separators */
 function maskPhone(phone: string | undefined): string {
   if (!phone) return '—';
   const digits = phone.replace(/\D/g, '');
   if (digits.length < 4) return '•'.repeat(phone.length);
-  const visible = digits.slice(-4);
-  const masked = '•'.repeat(digits.length - 4);
-  // Rebuild with original formatting hint
-  return `+••-•••••-${masked.slice(0, Math.max(0, masked.length - 1))}${visible}`;
+  // Show last 4 digits, mask all other digit positions while preserving non-digit chars
+  let digitIdx = 0;
+  const totalDigits = digits.length;
+  return phone.split('').map((ch) => {
+    if (/\d/.test(ch)) {
+      digitIdx++;
+      return digitIdx > totalDigits - 4 ? ch : '•';
+    }
+    return ch;
+  }).join('');
 }
 
 export default function UserBalanceDashboard({

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { Copy, Check } from 'lucide-react';
 
 interface ActivityLog {
@@ -22,31 +22,42 @@ export default function Sidebar({
   messageCount = 0,
   activityLogs = [],
 }: SidebarProps) {
-  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
-  const [copied, setCopied] = useState(false);
-
-  const handleCopySessionId = () => {
-    navigator.clipboard.writeText(sessionId).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  useEffect(() => {
-    // Check system preference
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window === 'undefined') {
+      return 'dark';
+    }
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
-    const initialTheme = savedTheme || (prefersDark ? 'dark' : 'light');
-    
-    setTheme(initialTheme);
-    applyTheme(initialTheme);
-  }, []);
+    return savedTheme || (prefersDark ? 'dark' : 'light');
+  });
+  const [copied, setCopied] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const applyTheme = (newTheme: 'light' | 'dark') => {
     const htmlElement = document.documentElement;
     htmlElement.setAttribute('data-theme', newTheme);
     localStorage.setItem('theme', newTheme);
   };
+
+  const handleCopySessionId = () => {
+    navigator.clipboard.writeText(sessionId).then(() => {
+      setCopied(true);
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+      copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  useEffect(() => {
+    applyTheme(theme);
+
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, [theme]);
 
   const toggleTheme = () => {
     const newTheme = theme === 'dark' ? 'light' : 'dark';

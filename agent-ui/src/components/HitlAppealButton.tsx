@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Loader, CheckCircle, Frown } from 'lucide-react';
 
 interface HitlAppealButtonProps {
@@ -23,6 +23,15 @@ export default function HitlAppealButton({ sessionId, onAppealSubmitted }: HitlA
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimeoutRef.current) {
+        clearTimeout(closeTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const handleSubmitAppeal = async () => {
     if (!appealReason.trim()) {
@@ -52,7 +61,7 @@ export default function HitlAppealButton({ sessionId, onAppealSubmitted }: HitlA
       setAppealReason('');
       onAppealSubmitted?.();
 
-      setTimeout(() => {
+      closeTimeoutRef.current = setTimeout(() => {
         setShowModal(false);
         setSubmitted(false);
       }, 3000);

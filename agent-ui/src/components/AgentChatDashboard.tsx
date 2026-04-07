@@ -226,6 +226,7 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
       
       // Create a dedicated ID for the streaming message (will be reused for all chunks)
       const agentMessageId = `msg-${Date.now()}-stream-${Math.random().toString(36).substr(2, 9)}`;
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
       try {
         resetActivityLog('Queued', 'Sending request to the Payment Switching Service (PaSS) orchestrator...', 'info');
@@ -236,7 +237,7 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
 
         // Call streaming backend API with long timeout (10 minutes for orchestration)
         const abortController = new AbortController();
-        const timeoutId = setTimeout(() => {
+        timeoutId = setTimeout(() => {
           abortController.abort();
           console.error('[SSE] Request timeout after 10 minutes');
         }, 10 * 60 * 1000); // 10 minutes
@@ -256,6 +257,7 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
         
         // Clear timeout once response starts
         clearTimeout(timeoutId);
+        timeoutId = null;
 
         if (!response.ok) {
           throw new Error(`API error: ${response.status}`);
@@ -452,6 +454,9 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
           })
         );
       } finally {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
         setIsLoading(false);
       }
     },

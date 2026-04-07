@@ -336,6 +336,46 @@ All secrets live in `.env` (git-ignored). See `.env.example` for the full list w
 | `MONGODB_INITDB_ROOT_USERNAME` / `_PASSWORD` | MongoDB credentials |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins |
 | `LLM_TIMEOUT_SECONDS` | LLM inference timeout — set high on slow hardware (default: `600`) |
+| `MONGODB_QE_CRYPT_SHARED_LIB_PATH` | Optional path to `mongo_crypt_v1` shared library for Queryable Encryption |
+| `QE_IT_CRYPT_SHARED_LIB_PATH` | Build/test helper: source library file to bundle into `target/qe-native` |
+| `QE_IT_CRYPT_SHARED_LIB_URL` | Build helper: download URL for `mongo_crypt_v1` archive or binary |
+| `QE_IT_CRYPT_SHARED_LIB_SHA256` | Optional checksum validation for downloaded artifact |
+
+### Bundle QE Crypt Shared Library With Package
+
+If your host has a `mongo_crypt_v1` library file, you can bundle it into the package:
+
+```bash
+QE_IT_CRYPT_SHARED_LIB_PATH=/absolute/path/to/mongo_crypt_v1.dylib mvn clean package -DskipTests
+```
+
+This copies the library to `target/qe-native/mongo_crypt_v1.*` during `prepare-package`,
+and the Docker image includes `/app/qe-native`. The entrypoint auto-wires
+`MONGODB_QE_CRYPT_SHARED_LIB_PATH` if a bundled library is present.
+
+For portability across machines, you can commit libraries under:
+
+`src/main/resources/qe-native/`
+
+When no explicit path or URL is provided, the package step now uses that folder as a default source.
+
+If you want the package step to download the library:
+
+```bash
+QE_IT_CRYPT_SHARED_LIB_URL=https://your-artifact-host/path/to/mongo_crypt_v1-linux-aarch64.tgz \
+QE_IT_CRYPT_SHARED_LIB_SHA256=<optional_sha256> \
+mvn clean package -DskipTests
+```
+
+To download directly into source resources for portability:
+
+```bash
+MONGODB_QE_CRYPT_SHARED_LIB_URL=https://<your-artifact-host>/mongo_crypt_v1-linux-aarch64.tgz \
+MONGODB_QE_CRYPT_SHARED_LIB_SHA256=<optional_sha256> \
+make qe-download-lib
+```
+
+This installs the binary under `src/main/resources/qe-native/mongo_crypt_v1.so`.
 
 ---
 

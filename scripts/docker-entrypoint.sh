@@ -52,5 +52,29 @@ if [ -n "$HTTP_REQUEST_TIMEOUT" ]; then
   JAVA_OPTS_ENV="$JAVA_OPTS_ENV -DHTTP_REQUEST_TIMEOUT=$HTTP_REQUEST_TIMEOUT"
 fi
 
+# Queryable Encryption crypt shared library path
+if [ -z "$MONGODB_QE_CRYPT_SHARED_LIB_PATH" ]; then
+  case "$(uname -s)" in
+    Linux)
+      [ -f /app/qe-native/mongo_crypt_v1.so ] && MONGODB_QE_CRYPT_SHARED_LIB_PATH=/app/qe-native/mongo_crypt_v1.so
+      ;;
+    Darwin)
+      [ -f /app/qe-native/mongo_crypt_v1.dylib ] && MONGODB_QE_CRYPT_SHARED_LIB_PATH=/app/qe-native/mongo_crypt_v1.dylib
+      ;;
+  esac
+
+  if [ -z "$MONGODB_QE_CRYPT_SHARED_LIB_PATH" ]; then
+    for candidate in /app/qe-native/mongo_crypt_v1.*; do
+      if [ -f "$candidate" ]; then
+        MONGODB_QE_CRYPT_SHARED_LIB_PATH="$candidate"
+        break
+      fi
+    done
+  fi
+fi
+if [ -n "$MONGODB_QE_CRYPT_SHARED_LIB_PATH" ]; then
+  JAVA_OPTS_ENV="$JAVA_OPTS_ENV -DMONGODB_QE_CRYPT_SHARED_LIB_PATH=$MONGODB_QE_CRYPT_SHARED_LIB_PATH"
+fi
+
 # Execute Java application with all options
 exec java $JAVA_OPTS $JAVA_OPTS_ENV -jar app.jar

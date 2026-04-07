@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AlertCircle, CheckCircle, XCircle, Clock, RefreshCw, Loader } from 'lucide-react';
 
 interface EscalationRecord {
@@ -40,12 +40,17 @@ export default function HitlOperatorDashboard() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [actionStates, setActionStates] = useState<Map<string, ActionState>>(new Map());
   const [submittingActions, setSubmittingActions] = useState<Set<string>>(new Set());
+  const timeoutRefs = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   // Fetch pending escalations
   useEffect(() => {
     fetchPendingEscalations();
     const interval = setInterval(fetchPendingEscalations, 10000); // Refresh every 10s
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      timeoutRefs.current.forEach((id) => clearTimeout(id));
+      timeoutRefs.current = [];
+    };
   }, []);
 
   const fetchPendingEscalations = async () => {
@@ -117,14 +122,17 @@ export default function HitlOperatorDashboard() {
       setSelectedId(null);
       await fetchPendingEscalations();
 
-      setTimeout(() => setSuccessMessage(null), 3000);
-      setTimeout(() => {
+      const successTimeout = setTimeout(() => setSuccessMessage(null), 3000);
+      timeoutRefs.current.push(successTimeout);
+
+      const actionCleanupTimeout = setTimeout(() => {
         setActionStates(prev => {
           const updated = new Map(prev);
           updated.delete(actionKey);
           return updated;
         });
       }, 5000);
+      timeoutRefs.current.push(actionCleanupTimeout);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : `Error performing ${action}`;
       

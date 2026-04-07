@@ -3,6 +3,7 @@
 .PHONY: logs-backend logs-frontend logs-mongodb logs-ollama
 .PHONY: health-check shell-mongodb shell-ollama
 .PHONY: backend-test clean-docker clean-all update-deps
+.PHONY: qe-download-lib
 
 # Variables
 DOCKER_COMPOSE := docker compose
@@ -199,6 +200,11 @@ update-deps: ## Update dependencies to latest versions
 	cd agent-ui && $(NODE) update
 	$(MAVEN) -f pom.xml versions:use-latest-versions
 	@echo "$(GREEN)✓ Dependencies updated$(NC)"
+
+qe-download-lib: ## Download mongo_crypt_v1 library into src/main/resources/qe-native
+	@echo "$(BLUE)Downloading QE crypt shared library...$(NC)"
+	sh scripts/download-qe-lib.sh
+	@echo "$(GREEN)✓ QE library installed into src/main/resources/qe-native$(NC)"
 
 # ============================================================================
 # DATABASE COMMANDS

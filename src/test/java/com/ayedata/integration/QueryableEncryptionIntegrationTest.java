@@ -11,16 +11,22 @@ import com.mongodb.client.model.Filters;
 import com.mongodb.client.model.vault.DataKeyOptions;
 import com.mongodb.client.vault.ClientEncryption;
 import com.mongodb.client.vault.ClientEncryptions;
+import org.bson.BsonArray;
 import org.bson.BsonBinary;
 import org.bson.BsonDocument;
+import org.bson.BsonString;
 import org.bson.Document;
 import org.bson.UuidRepresentation;
 import org.bson.types.Binary;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -42,6 +48,11 @@ class QueryableEncryptionIntegrationTest {
 
     @Test
     void encryptsAtRestAndDecryptsOnRead() {
+        String cryptSharedLibPath = envOrDefault("QE_IT_CRYPT_SHARED_LIB_PATH", "");
+        Assumptions.assumeTrue(
+                hasCryptRuntime(cryptSharedLibPath),
+                "Skipping QE IT: install mongocryptd or set QE_IT_CRYPT_SHARED_LIB_PATH");
+
         String uri = envOrThrow("QE_IT_URI");
         String dbName = envOrDefault("QE_IT_DB", "pass_qe_it");
         String keyVaultNamespace = dbName + ".keyvault_keys";
@@ -51,29 +62,8 @@ class QueryableEncryptionIntegrationTest {
         byte[] localMasterKey = decodeMasterKey(envOrDefault("QE_IT_LOCAL_MASTER_KEY_BASE64", DEFAULT_MASTER_KEY_BASE64));
         Map<String, Map<String, Object>> kmsProviders = Map.of("local", Map.of("key", localMasterKey));
 
-        ensureDataKeyExists(uri, keyVaultNamespace, kmsProviders, keyAltName);
-
-        BsonDocument schema = BsonDocument.parse("""
-                {
-                  \"bsonType\": \"object\",
-                  \"properties\": {
-                    \"email\": {
-                      \"encrypt\": {
-                        \"bsonType\": \"string\",
-                        \"algorithm\": \"AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic\",
-                        \"keyAltName\": \"qe-it-key\"
-                      }
-                    },
-                    \"phone\": {
-                      \"encrypt\": {
-                        \"bsonType\": \"string\",
-                        \"algorithm\": \"AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic\",
-                        \"keyAltName\": \"qe-it-key\"
-                      }
-                    }
-                  }
-                }
-                """);
+        BsonBinary keyId = ensureDataKeyExists(uri, keyVaultNamespace, kmsProviders, keyAltName);
+        BsonDocument schema = buildSchemaWithKeyId(keyId);
 
         Map<String, BsonDocument> schemaMap = Map.of(dbName + "." + collectionName, schema);
 
@@ -84,6 +74,7 @@ class QueryableEncryptionIntegrationTest {
                         .keyVaultNamespace(keyVaultNamespace)
                         .kmsProviders(kmsProviders)
                         .schemaMap(schemaMap)
+                        .extraOptions(buildAutoEncryptionExtraOptions(cryptSharedLibPath))
                         .keyVaultMongoClientSettings(MongoClientSettings.builder()
                                 .applyConnectionString(new ConnectionString(uri))
                                 .uuidRepresentation(UuidRepresentation.STANDARD)
@@ -130,7 +121,7 @@ class QueryableEncryptionIntegrationTest {
         }
     }
 
-    private static void ensureDataKeyExists(
+        private static BsonBinary ensureDataKeyExists(
             String uri,
             String keyVaultNamespace,
             Map<String, Map<String, Object>> kmsProviders,
@@ -152,7 +143,14 @@ class QueryableEncryptionIntegrationTest {
 
             Document existing = keyVault.find(Filters.eq("keyAltNames", keyAltName)).first();
             if (existing != null) {
-                return;
+                                Object rawId = existing.get("_id");
+                                if (rawId instanceof Binary binary) {
+                                        return new BsonBinary(binary.getType(), binary.getData());
+                                }
+                if (rawId instanceof UUID uuid) {
+                    return new BsonBinary(uuid, UuidRepresentation.STANDARD);
+                }
+                                throw new IllegalStateException("Unexpected _id type in key vault: " + rawId.getClass());
             }
         }
 
@@ -169,6 +167,7 @@ class QueryableEncryptionIntegrationTest {
             BsonBinary keyId = clientEncryption.createDataKey("local", new DataKeyOptions()
                     .keyAltNames(List.of(keyAltName)));
             Assertions.assertNotNull(keyId);
+                        return keyId;
         }
     }
 
@@ -191,5 +190,48 @@ class QueryableEncryptionIntegrationTest {
             throw new IllegalStateException("QE_IT_LOCAL_MASTER_KEY_BASE64 must decode to exactly 96 bytes");
         }
         return key;
+    }
+
+    private static Map<String, Object> buildAutoEncryptionExtraOptions(String cryptSharedLibPath) {
+        Map<String, Object> options = new HashMap<>();
+        if (cryptSharedLibPath != null && !cryptSharedLibPath.isBlank()) {
+            options.put("cryptSharedLibPath", cryptSharedLibPath);
+            options.put("cryptSharedLibRequired", true);
+        }
+        return options;
+    }
+
+    private static boolean hasCryptRuntime(String cryptSharedLibPath) {
+        if (cryptSharedLibPath != null && !cryptSharedLibPath.isBlank()) {
+            return Files.exists(Path.of(cryptSharedLibPath));
+        }
+        return isExecutableOnPath("mongocryptd");
+    }
+
+    private static boolean isExecutableOnPath(String executableName) {
+        String path = System.getenv("PATH");
+        if (path == null || path.isBlank()) {
+            return false;
+        }
+        for (String dir : path.split(System.getProperty("path.separator"))) {
+            Path candidate = Path.of(dir, executableName);
+            if (Files.isExecutable(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static BsonDocument buildSchemaWithKeyId(BsonBinary keyId) {
+        BsonDocument encryptSpec = new BsonDocument()
+                .append("bsonType", new BsonString("string"))
+                .append("algorithm", new BsonString("AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic"))
+                .append("keyId", new BsonArray(List.of(keyId)));
+
+        return new BsonDocument()
+                .append("bsonType", new BsonString("object"))
+                .append("properties", new BsonDocument()
+                        .append("email", new BsonDocument("encrypt", encryptSpec))
+                        .append("phone", new BsonDocument("encrypt", encryptSpec)));
     }
 }

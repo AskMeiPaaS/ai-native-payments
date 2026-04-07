@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 export interface TelemetryVector {
   averageFlightTimeMs: number;
@@ -11,27 +11,28 @@ export interface TelemetryVector {
  * This data is sent to the Java Context Agent for continuous implicit authentication.
  */
 export function useTelemetry() {
+  const MAX_KEYPRESS_SAMPLES = 256;
   const [keyPresses, setKeyPresses] = useState<{ key: string; down: number; up: number }[]>([]);
-  const [currentKeyDown, setCurrentKeyDown] = useState<{ [key: string]: number }>({});
+  const currentKeyDownRef = useRef<{ [key: string]: number }>({});
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    setCurrentKeyDown((prev) => ({ ...prev, [e.key]: performance.now() }));
+    currentKeyDownRef.current[e.key] = performance.now();
   }, []);
 
   const handleKeyUp = useCallback((e: KeyboardEvent) => {
-    const downTime = currentKeyDown[e.key];
+    const downTime = currentKeyDownRef.current[e.key];
     if (downTime) {
       const upTime = performance.now();
-      setKeyPresses((prev) => [...prev, { key: e.key, down: downTime, up: upTime }]);
-      
-      // Clean up to prevent memory leaks
-      setCurrentKeyDown((prev) => {
-        const next = { ...prev };
-        delete next[e.key];
-        return next;
+      setKeyPresses((prev) => {
+        const next = [...prev, { key: e.key, down: downTime, up: upTime }];
+        // Bound telemetry history to avoid unbounded in-memory growth during long sessions.
+        return next.length > MAX_KEYPRESS_SAMPLES ? next.slice(-MAX_KEYPRESS_SAMPLES) : next;
       });
+
+      // Clean up key state after processing key-up event.
+      delete currentKeyDownRef.current[e.key];
     }
-  }, [currentKeyDown]);
+  }, []);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);

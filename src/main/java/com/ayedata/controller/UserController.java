@@ -3,7 +3,6 @@ package com.ayedata.controller;
 import com.ayedata.domain.UserProfile;
 import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.service.AccountBalanceService;
-import com.ayedata.service.UserProfileEncryptionService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,13 +24,9 @@ import java.util.Map;
 public class UserController {
 
     private final AccountBalanceService accountBalanceService;
-    private final UserProfileEncryptionService encryptionService;
 
-    public UserController(
-            AccountBalanceService accountBalanceService,
-            UserProfileEncryptionService encryptionService) {
+    public UserController(AccountBalanceService accountBalanceService) {
         this.accountBalanceService = accountBalanceService;
-        this.encryptionService = encryptionService;
     }
 
     /**
@@ -67,9 +62,8 @@ public class UserController {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("userId", profile.getId());
         response.put("displayName", profile.getDisplayName());
-        // Decrypt PII fields for the authenticated session
-        response.put("email", encryptionService.decrypt(profile.getEmail()));
-        response.put("phone", encryptionService.decrypt(profile.getPhone()));
+        response.put("email", profile.getEmail());
+        response.put("phone", profile.getPhone());
         response.put("currency", profile.getCurrency());
         response.put("currentBalance", profile.getCurrentBalance());
         return ResponseEntity.ok(response);

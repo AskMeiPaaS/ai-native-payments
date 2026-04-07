@@ -1,33 +1,32 @@
 {
-  "bson": {
-    "encryptMetadata": {
-      "keyId": ["/keyId"],
-      "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Random"
+  "bsonType": "object",
+  "properties": {
+    "email": {
+      "encrypt": {
+        "bsonType": "string",
+        "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic",
+        "keyAltName": "user-profile-key"
+      }
     },
-    "properties": {
-      "email": {
+    "phone": {
+      "encrypt": {
         "bsonType": "string",
-        "encrypt": {
-          "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic"
-        }
-      },
-      "phone": {
+        "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic",
+        "keyAltName": "user-profile-key"
+      }
+    },
+    "ssn": {
+      "encrypt": {
         "bsonType": "string",
-        "encrypt": {
-          "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic"
-        }
-      },
-      "ssn": {
+        "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Random",
+        "keyAltName": "user-profile-key"
+      }
+    },
+    "bank_account": {
+      "encrypt": {
         "bsonType": "string",
-        "encrypt": {
-          "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Random"
-        }
-      },
-      "bank_account": {
-        "bsonType": "string",
-        "encrypt": {
-          "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic"
-        }
+        "algorithm": "AEAD_AES_256_CBC_HMAC_SHA_512-Deterministic",
+        "keyAltName": "user-profile-key"
       }
     }
   }

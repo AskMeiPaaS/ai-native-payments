@@ -1,22 +1,25 @@
 package com.ayedata.init;
 
 import com.ayedata.domain.UserProfile;
-import com.ayedata.service.UserProfileEncryptionService;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
 
 /**
  * Seeds a fixed set of demo users into the {@code user_profiles} collection on startup.
  *
- * <p>Each user's {@code email} and {@code phone} fields are encrypted with AES-256-GCM
- * via {@link UserProfileEncryptionService} before being persisted, simulating MongoDB
- * Queryable Encryption for PII data.
+ * <p>Each user's PII fields are persisted through the primary auto-encrypted MongoClient,
+ * so MongoDB Queryable Encryption is applied transparently per configured schema.
  *
  * <p>This initializer is idempotent: it only creates users that do not already exist.
  */
@@ -25,23 +28,18 @@ public class UserProfileInitializer {
 
     private static final Logger log = LoggerFactory.getLogger(UserProfileInitializer.class);
 
-    /** Fixed demo user definitions (userId, displayName, email, phone, openingBalance). */
-    private static final List<DemoUser> DEMO_USERS = List.of(
-            new DemoUser("user001", "Arjun Kumar",  "arjun.kumar@example.com",  "+91-98765-43210", 50_000.00),
-            new DemoUser("user002", "Priya Sharma", "priya.sharma@example.com", "+91-87654-32109", 75_000.00),
-            new DemoUser("user003", "Rahul Patel",  "rahul.patel@example.com",  "+91-76543-21098", 30_000.00),
-            new DemoUser("user004", "Kavya Singh",  "kavya.singh@example.com",  "+91-65432-10987", 100_000.00),
-            new DemoUser("user005", "Amit Verma",   "amit.verma@example.com",   "+91-54321-09876", 25_000.00)
-    );
+    private static final String DEMO_USERS_RESOURCE = "seeds/demo-users.json";
+    private static volatile List<String> demoUserIds = List.of();
 
     private final MongoTemplate primaryTemplate;
-    private final UserProfileEncryptionService encryptionService;
+    private final List<DemoUser> demoUsers;
 
     public UserProfileInitializer(
             @Qualifier("primaryMongoTemplate") MongoTemplate primaryTemplate,
-            UserProfileEncryptionService encryptionService) {
+            ObjectMapper objectMapper) {
         this.primaryTemplate = primaryTemplate;
-        this.encryptionService = encryptionService;
+        this.demoUsers = loadDemoUsers(objectMapper);
+        demoUserIds = this.demoUsers.stream().map(DemoUser::userId).toList();
     }
 
     /**
@@ -50,7 +48,7 @@ public class UserProfileInitializer {
     public void seedDemoUsers() {
         log.info("👤 Seeding demo user profiles...");
         int created = 0;
-        for (DemoUser demo : DEMO_USERS) {
+        for (DemoUser demo : demoUsers) {
             if (primaryTemplate.findById(demo.userId(), UserProfile.class) != null) {
                 log.debug("  ↳ User {} already exists, skipping.", demo.userId());
                 continue;
@@ -71,7 +69,7 @@ public class UserProfileInitializer {
      * Returns the list of demo user IDs available for login.
      */
     public static List<String> getDemoUserIds() {
-        return DEMO_USERS.stream().map(DemoUser::userId).toList();
+        return demoUserIds;
     }
 
     // -------------------------------------------------------------------------
@@ -82,9 +80,9 @@ public class UserProfileInitializer {
         UserProfile profile = new UserProfile();
         profile.setId(demo.userId());
         profile.setDisplayName(demo.displayName());
-        // Encrypt PII fields before persisting
-        profile.setEmail(encryptionService.encrypt(demo.email()));
-        profile.setPhone(encryptionService.encrypt(demo.phone()));
+        // Auto encryption is applied by the MongoDB driver based on QE schema map.
+        profile.setEmail(demo.email());
+        profile.setPhone(demo.phone());
         profile.setCurrentBalance(demo.openingBalance());
         profile.setCurrency("INR");
         profile.setLastUpdatedAt(Instant.now());
@@ -93,6 +91,21 @@ public class UserProfileInitializer {
                         List.of(0.98, 0.97, 0.96),
                         List.of("trusted-mobile")));
         return profile;
+    }
+
+    private List<DemoUser> loadDemoUsers(ObjectMapper objectMapper) {
+        try {
+            ClassPathResource resource = new ClassPathResource(DEMO_USERS_RESOURCE);
+            List<DemoUser> loaded = objectMapper.readValue(resource.getInputStream(), new TypeReference<>() {});
+            if (loaded.isEmpty()) {
+                throw new IllegalStateException("Demo user list is empty");
+            }
+            log.info("Loaded {} demo users from {}", loaded.size(), DEMO_USERS_RESOURCE);
+            return loaded;
+        } catch (IOException e) {
+            log.error("Failed to load demo users from {}", DEMO_USERS_RESOURCE, e);
+            return Collections.emptyList();
+        }
     }
 
     // -------------------------------------------------------------------------

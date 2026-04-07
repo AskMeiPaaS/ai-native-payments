@@ -1,18 +1,33 @@
 package com.ayedata.init;
 
+import com.mongodb.ConnectionString;
+import com.mongodb.ClientEncryptionSettings;
+import com.mongodb.MongoClientSettings;
 import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.IndexOptions;
+import com.mongodb.client.model.Indexes;
+import com.mongodb.client.model.Filters;
+import com.mongodb.client.vault.ClientEncryption;
+import com.mongodb.client.vault.ClientEncryptions;
+import com.mongodb.client.model.vault.DataKeyOptions;
 import org.bson.Document;
+import org.bson.BsonBinary;
+import org.bson.UuidRepresentation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.stereotype.Component;
 
-import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Manages MongoDB Queryable Encryption key vault initialization.
@@ -23,13 +38,25 @@ public class EncryptionKeyInitializer {
 
     private static final Logger log = LoggerFactory.getLogger(EncryptionKeyInitializer.class);
 
-    private final MongoClient primaryMongoClient;
     private final MongoTemplate primaryTemplate;
 
+    @Value("${spring.data.mongodb.primary.uri}")
+    private String primaryUri;
+
+    @Value("${app.mongodb.qe.key-vault-database:keyvault}")
+    private String keyVaultDatabase;
+
+    @Value("${app.mongodb.qe.key-vault-collection:keys}")
+    private String keyVaultCollection;
+
+    @Value("${app.mongodb.qe.user-profile-key-alt-name:user-profile-key}")
+    private String userProfileKeyAltName;
+
+    @Value("${app.mongodb.qe.local-master-key-base64}")
+    private String localMasterKeyBase64;
+
     public EncryptionKeyInitializer(
-            @Qualifier("primaryMongoClient") MongoClient primaryMongoClient,
             @Qualifier("primaryMongoTemplate") MongoTemplate primaryTemplate) {
-        this.primaryMongoClient = primaryMongoClient;
         this.primaryTemplate = primaryTemplate;
     }
 
@@ -38,55 +65,64 @@ public class EncryptionKeyInitializer {
      * Idempotent — checks if key already exists before creating.
      */
     public void initializeKeyVault() {
-        try {
-            log.info("🔐 Initializing MongoDB Queryable Encryption Key Vault...");
+        log.info("🔐 Initializing MongoDB Queryable Encryption Key Vault...");
 
-            MongoDatabase keyVaultDb = primaryMongoClient.getDatabase("keyvault");
+        try (MongoClient keyVaultClient = MongoClients.create(
+                MongoClientSettings.builder()
+                        .applyConnectionString(new ConnectionString(primaryUri))
+                        .uuidRepresentation(UuidRepresentation.STANDARD)
+                        .build())) {
 
-            if (!keyVaultDb.listCollectionNames().into(new ArrayList<>()).contains("keys")) {
-                keyVaultDb.createCollection("keys");
-                log.info("✅ Created key vault collection");
+            MongoDatabase keyVaultDb = keyVaultClient.getDatabase(keyVaultDatabase);
+
+            if (!keyVaultDb.listCollectionNames().into(new ArrayList<>()).contains(keyVaultCollection)) {
+                keyVaultDb.createCollection(keyVaultCollection);
+                log.info("✅ Created key vault collection {}", keyVaultCollection);
             }
 
-            MongoCollection<Document> keysCollection = keyVaultDb.getCollection("keys");
+            MongoCollection<Document> keysCollection = keyVaultDb.getCollection(keyVaultCollection);
 
-            Document existingKey = keysCollection.find(new Document("keyType", "local")).first();
+            keysCollection.createIndex(
+                    Indexes.ascending("keyAltNames"),
+                    new IndexOptions()
+                            .unique(true)
+                            .partialFilterExpression(Filters.exists("keyAltNames")));
+
+            Document existingKey = keysCollection.find(Filters.eq("keyAltNames", userProfileKeyAltName)).first();
             if (existingKey != null) {
-                log.info("✅ Queryable Encryption key already exists (idempotent). KeyId: {}",
-                        existingKey.getObjectId("_id"));
+                log.info("✅ Queryable Encryption DEK already exists for keyAltName='{}'", userProfileKeyAltName);
                 return;
             }
 
-            byte[] keyMaterial = generateSecureRandomBytes(96);
+            Map<String, Map<String, Object>> kmsProviders = Map.of(
+                    "local", Map.of("key", decodeLocalMasterKey(localMasterKeyBase64)));
 
-            Document dataEncryptionKey = new Document()
-                    .append("keyType", "local")
-                    .append("key", keyMaterial)
-                    .append("createdAt", new Date())
-                    .append("algorithm", "AEAD_AES_256_CBC_HMAC_SHA_512")
-                    .append("status", "ACTIVE")
-                    .append("keyRotationSchedule", "HOURLY");
+            String keyVaultNamespace = keyVaultDatabase + "." + keyVaultCollection;
+            ClientEncryptionSettings clientEncryptionSettings = ClientEncryptionSettings.builder()
+                    .keyVaultMongoClientSettings(MongoClientSettings.builder()
+                            .applyConnectionString(new ConnectionString(primaryUri))
+                            .uuidRepresentation(UuidRepresentation.STANDARD)
+                            .build())
+                    .keyVaultNamespace(keyVaultNamespace)
+                    .kmsProviders(kmsProviders)
+                    .build();
 
-            keysCollection.insertOne(dataEncryptionKey);
-
-            log.info("✅ Queryable Encryption Key Generated - KeyId: {}",
-                    dataEncryptionKey.getObjectId("_id"));
+            BsonBinary keyId;
+            try (ClientEncryption clientEncryption = ClientEncryptions.create(clientEncryptionSettings)) {
+                keyId = clientEncryption.createDataKey("local", new DataKeyOptions()
+                        .keyAltNames(List.of(userProfileKeyAltName)));
+            }
 
             Document auditEntry = new Document()
-                    .append("event", "QE_KEY_GENERATED")
-                    .append("keyId", dataEncryptionKey.getObjectId("_id").toString())
-                    .append("algorithm", "AES-256-GCM")
+                    .append("event", "QE_DATA_KEY_GENERATED")
+                    .append("keyAltName", userProfileKeyAltName)
+                    .append("keyId", keyId.asUuid().toString())
                     .append("source", "SYSTEM_INITIALIZATION")
                     .append("timestamp", new Date())
                     .append("status", "SUCCESS");
 
             primaryTemplate.getCollection("system_audit_logs").insertOne(auditEntry);
-
-            keysCollection.createIndex(new Document("status", 1));
-            keysCollection.createIndex(new Document("createdAt", 1));
-            keysCollection.createIndex(new Document("keyType", 1));
-
-            log.info("✅ Key Vault collection indexes created");
+            log.info("✅ Queryable Encryption DEK generated for keyAltName='{}'", userProfileKeyAltName);
 
         } catch (Exception e) {
             log.error("❌ Failed to initialize Queryable Encryption key", e);
@@ -94,10 +130,12 @@ public class EncryptionKeyInitializer {
         }
     }
 
-    private byte[] generateSecureRandomBytes(int length) {
-        byte[] key = new byte[length];
-        SecureRandom random = new SecureRandom();
-        random.nextBytes(key);
-        return key;
+    private byte[] decodeLocalMasterKey(String keyBase64) {
+        byte[] decoded = Base64.getDecoder().decode(keyBase64);
+        if (decoded.length != 96) {
+            throw new IllegalStateException(
+                    "app.mongodb.qe.local-master-key-base64 must decode to exactly 96 bytes");
+        }
+        return decoded;
     }
 }

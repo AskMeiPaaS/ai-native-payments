@@ -1,0 +1,37 @@
+[
+  {
+    "userId": "user001",
+    "displayName": "Arjun Kumar",
+    "email": "arjun.kumar@example.com",
+    "phone": "+91-98765-43210",
+    "openingBalance": 50000.0
+  },
+  {
+    "userId": "user002",
+    "displayName": "Priya Sharma",
+    "email": "priya.sharma@example.com",
+    "phone": "+91-87654-32109",
+    "openingBalance": 75000.0
+  },
+  {
+    "userId": "user003",
+    "displayName": "Rahul Patel",
+    "email": "rahul.patel@example.com",
+    "phone": "+91-76543-21098",
+    "openingBalance": 30000.0
+  },
+  {
+    "userId": "user004",
+    "displayName": "Kavya Singh",
+    "email": "kavya.singh@example.com",
+    "phone": "+91-65432-10987",
+    "openingBalance": 100000.0
+  },
+  {
+    "userId": "user005",
+    "displayName": "Amit Verma",
+    "email": "amit.verma@example.com",
+    "phone": "+91-54321-09876",
+    "openingBalance": 25000.0
+  }
+]

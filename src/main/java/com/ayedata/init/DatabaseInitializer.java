@@ -28,6 +28,7 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final HitlDatabaseInitializer hitlDatabaseInitializer;
     private final MemoryDatabaseInitializer memoryDatabaseInitializer;
     private final RagKnowledgeSeeder ragKnowledgeSeeder;
+    private final UserProfileInitializer userProfileInitializer;
 
     public DatabaseInitializer(
             @Qualifier("primaryMongoTemplate") MongoTemplate primaryTemplate,
@@ -36,7 +37,8 @@ public class DatabaseInitializer implements ApplicationRunner {
             VectorSearchIndexInitializer vectorSearchIndexInitializer,
             HitlDatabaseInitializer hitlDatabaseInitializer,
             MemoryDatabaseInitializer memoryDatabaseInitializer,
-            RagKnowledgeSeeder ragKnowledgeSeeder) {
+            RagKnowledgeSeeder ragKnowledgeSeeder,
+            UserProfileInitializer userProfileInitializer) {
         this.primaryTemplate = primaryTemplate;
         this.connectionValidator = connectionValidator;
         this.encryptionKeyInitializer = encryptionKeyInitializer;
@@ -44,6 +46,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.hitlDatabaseInitializer = hitlDatabaseInitializer;
         this.memoryDatabaseInitializer = memoryDatabaseInitializer;
         this.ragKnowledgeSeeder = ragKnowledgeSeeder;
+        this.userProfileInitializer = userProfileInitializer;
     }
 
     @Override
@@ -72,7 +75,10 @@ public class DatabaseInitializer implements ApplicationRunner {
         // 4. Memory Database (temporal + RAG + chat memory)
         memoryDatabaseInitializer.initialize();
 
-        // 5. Seed RAG knowledge asynchronously (Voyage AI API — non-blocking)
+        // 5. Seed demo user profiles (with encrypted PII)
+        userProfileInitializer.seedDemoUsers();
+
+        // 6. Seed RAG knowledge asynchronously (Voyage AI API — non-blocking)
         Thread.ofVirtual().name("rag-seed").start(ragKnowledgeSeeder::seed);
     }
 }

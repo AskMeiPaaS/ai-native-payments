@@ -25,9 +25,13 @@ public class AccountBalanceService {
     private static final String DEFAULT_CURRENCY = "INR";
 
     private final MongoTemplate mongoTemplate;
+    private final UserProfileEncryptionService encryptionService;
 
-    public AccountBalanceService(@Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate) {
+    public AccountBalanceService(
+            @Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate,
+            UserProfileEncryptionService encryptionService) {
         this.mongoTemplate = mongoTemplate;
+        this.encryptionService = encryptionService;
     }
 
     public String normalizeUserId(String userId) {
@@ -136,6 +140,9 @@ public class AccountBalanceService {
         Map<String, Object> dashboard = new LinkedHashMap<>();
         dashboard.put("userId", profile.getId());
         dashboard.put("displayName", profile.getDisplayName());
+        // Decrypt PII fields before sending to frontend
+        dashboard.put("email", encryptionService.decrypt(profile.getEmail()));
+        dashboard.put("phone", encryptionService.decrypt(profile.getPhone()));
         dashboard.put("currentBalance", roundCurrency(profile.getCurrentBalance()));
         dashboard.put("availableBalance", roundCurrency(profile.getCurrentBalance()));
         dashboard.put("currency", profile.getCurrency() == null ? DEFAULT_CURRENCY : profile.getCurrency());

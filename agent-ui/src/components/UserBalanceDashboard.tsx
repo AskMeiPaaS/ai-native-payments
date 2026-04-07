@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 
 interface RecentTransfer {
   id: string;
@@ -17,6 +17,8 @@ interface RecentTransfer {
 interface AccountSummary {
   userId: string;
   displayName: string;
+  email?: string;
+  phone?: string;
   currentBalance: number;
   availableBalance: number;
   currency: string;
@@ -39,17 +41,81 @@ const formatCurrency = (amount: number, currency = 'INR') =>
     maximumFractionDigits: 2,
   }).format(amount ?? 0);
 
+/** Mask email: show first 2 chars + domain, e.g. "ar***@example.com" */
+function maskEmail(email: string | undefined): string {
+  if (!email) return '—';
+  const atIdx = email.indexOf('@');
+  if (atIdx <= 0) return '•••';
+  const local = email.slice(0, atIdx);
+  const domain = email.slice(atIdx);
+  const visible = local.slice(0, Math.min(2, local.length));
+  return `${visible}${'•'.repeat(Math.max(3, local.length - 2))}${domain}`;
+}
+
+/** Mask phone: show last 4 digits, e.g. "+91-•••••-•3210" */
+function maskPhone(phone: string | undefined): string {
+  if (!phone) return '—';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 4) return '•'.repeat(phone.length);
+  const visible = digits.slice(-4);
+  const masked = '•'.repeat(digits.length - 4);
+  // Rebuild with original formatting hint
+  return `+••-•••••-${masked.slice(0, Math.max(0, masked.length - 1))}${visible}`;
+}
+
 export default function UserBalanceDashboard({
   accountSummary,
   isLoading,
   error,
 }: UserBalanceDashboardProps) {
+  const [showEmail, setShowEmail] = useState(false);
+  const [showPhone, setShowPhone] = useState(false);
+
   return (
     <div className="balance-widget">
       <div className="balance-header">
-        <div>
+        <div className="balance-header-left">
           <div className="balance-title">🏦 {accountSummary?.displayName || 'Customer Dashboard'}</div>
           <div className="balance-subtitle">Use chat to send or receive funds.</div>
+
+          {/* PII fields — shown masked by default, revealed on click */}
+          <div className="pii-fields">
+            <div className="pii-field">
+              <span className="pii-label">📧 Email</span>
+              <span className="pii-value">
+                {showEmail ? (accountSummary?.email || '—') : maskEmail(accountSummary?.email)}
+              </span>
+              {accountSummary?.email && (
+                <button
+                  className="pii-toggle"
+                  onClick={() => setShowEmail((v) => !v)}
+                  title={showEmail ? 'Hide email' : 'Reveal email'}
+                  aria-label={showEmail ? 'Hide email' : 'Reveal email'}
+                >
+                  {showEmail ? '🙈' : '👁️'}
+                </button>
+              )}
+              <span className="pii-enc-badge" title="Stored encrypted with AES-256-GCM">🔒 QE</span>
+            </div>
+
+            <div className="pii-field">
+              <span className="pii-label">📱 Phone</span>
+              <span className="pii-value">
+                {showPhone ? (accountSummary?.phone || '—') : maskPhone(accountSummary?.phone)}
+              </span>
+              {accountSummary?.phone && (
+                <button
+                  className="pii-toggle"
+                  onClick={() => setShowPhone((v) => !v)}
+                  title={showPhone ? 'Hide phone' : 'Reveal phone'}
+                  aria-label={showPhone ? 'Hide phone' : 'Reveal phone'}
+                >
+                  {showPhone ? '🙈' : '👁️'}
+                </button>
+              )}
+              <span className="pii-enc-badge" title="Stored encrypted with AES-256-GCM">🔒 QE</span>
+            </div>
+          </div>
         </div>
         <div className="balance-live-badge">{isLoading ? 'Refreshing…' : 'Live balance'}</div>
       </div>

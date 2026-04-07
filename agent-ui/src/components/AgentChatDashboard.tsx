@@ -68,6 +68,8 @@ interface AccountTransferSummary {
 interface AccountSummary {
   userId: string;
   displayName: string;
+  email?: string;
+  phone?: string;
   currentBalance: number;
   availableBalance: number;
   currency: string;
@@ -78,9 +80,19 @@ interface AccountSummary {
 
 interface AgentChatDashboardProps {
   backendUrl?: string; // kept for backwards compat but ignored; Next.js rewrites handle routing
+  userId?: string;
+  userProfile?: {
+    userId: string;
+    displayName: string;
+    email: string;
+    phone: string;
+    currency: string;
+    currentBalance: number;
+  };
+  onLogout?: () => void;
 }
 
-export default function AgentChatDashboard(_props: AgentChatDashboardProps = {}) {
+export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashboardProps = {}) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
@@ -91,6 +103,9 @@ export default function AgentChatDashboard(_props: AgentChatDashboardProps = {})
   const [accountError, setAccountError] = useState<string | null>(null);
   const [isAccountLoading, setIsAccountLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Resolve effective userId for API calls
+  const effectiveUserId = userId || 'demo-user';
 
   const buildActivityEntry = useCallback((
     stage: string,
@@ -119,7 +134,7 @@ export default function AgentChatDashboard(_props: AgentChatDashboardProps = {})
   const refreshAccountSummary = useCallback(async (notifyOnBalanceChange = false) => {
     try {
       setIsAccountLoading(true);
-      const response = await fetch('/api/v1/account/dashboard?userId=demo-user', {
+      const response = await fetch(`/api/v1/account/dashboard?userId=${encodeURIComponent(effectiveUserId)}`, {
         cache: 'no-store',
       });
 
@@ -142,7 +157,7 @@ export default function AgentChatDashboard(_props: AgentChatDashboardProps = {})
     } finally {
       setIsAccountLoading(false);
     }
-  }, [appendActivity]);
+  }, [appendActivity, effectiveUserId]);
 
   // Check backend and MongoDB health
   const checkHealth = useCallback(async () => {
@@ -476,21 +491,28 @@ export default function AgentChatDashboard(_props: AgentChatDashboardProps = {})
             </button>
           </div>
 
-          <div className="security-badge">
-            <span>⚠️</span>
-            <span>DEMO ONLY</span>
-            <div className="security-badge-tooltip">
-              <strong>REFERENCE IMPLEMENTATION — NOT FOR PRODUCTION</strong>
-              <p>Demonstration project. Missing critical features:</p>
-              <ul>
-                <li>No authentication / authorization</li>
-                <li>No rate limiting or DDoS protection</li>
-                <li>No HTTPS / TLS enforcement</li>
-                <li>No CSRF token protection</li>
-                <li>No real payment processor — mock data only</li>
-              </ul>
-              <p>For production: add auth, rate limiting, HTTPS, input sanitization, and a licensed payment processor.</p>
+          <div className="tab-nav-right">
+            <div className="security-badge">
+              <span>⚠️</span>
+              <span>DEMO ONLY</span>
+              <div className="security-badge-tooltip">
+                <strong>REFERENCE IMPLEMENTATION — NOT FOR PRODUCTION</strong>
+                <p>Demonstration project. Missing critical features:</p>
+                <ul>
+                  <li>No authentication / authorization</li>
+                  <li>No rate limiting or DDoS protection</li>
+                  <li>No HTTPS / TLS enforcement</li>
+                  <li>No CSRF token protection</li>
+                  <li>No real payment processor — mock data only</li>
+                </ul>
+                <p>For production: add auth, rate limiting, HTTPS, input sanitization, and a licensed payment processor.</p>
+              </div>
             </div>
+            {onLogout && (
+              <button className="logout-btn" onClick={onLogout} title="Switch user">
+                🔄 Switch User
+              </button>
+            )}
           </div>
         </div>
 

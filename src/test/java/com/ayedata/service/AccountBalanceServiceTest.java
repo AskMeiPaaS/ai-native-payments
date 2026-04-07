@@ -29,17 +29,12 @@ class AccountBalanceServiceTest {
     @Mock
     private MongoTemplate mongoTemplate;
 
-    @Mock
-    private UserProfileEncryptionService encryptionService;
-
     private AccountBalanceService accountBalanceService;
 
     @BeforeEach
     void setUp() {
-        accountBalanceService = new AccountBalanceService(mongoTemplate, encryptionService);
+        accountBalanceService = new AccountBalanceService(mongoTemplate);
         lenient().when(mongoTemplate.save(any(UserProfile.class))).thenAnswer(invocation -> invocation.getArgument(0));
-        // Encryption service returns the input unchanged (passthrough for tests)
-        lenient().when(encryptionService.decrypt(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test

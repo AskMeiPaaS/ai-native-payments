@@ -1,11 +1,16 @@
 package com.ayedata.ai.agent;
 
+import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.rag.service.RagService;
+import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.TemporalMemoryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -36,15 +41,18 @@ public class ContextEnricher {
         {"RTGS",      "RTGS",       "REAL TIME GROSS SETTLEMENT", "REAL-TIME GROSS SETTLEMENT"},
         {"IMPS",      "IMPS",       "IMMEDIATE PAYMENT SERVICE"},
         {"Cheque",    "CHEQUE"},
-        {"Cash",      "CASH"},
     };
 
     private final RagService ragService;
     private final TemporalMemoryService temporalMemoryService;
+    private final AccountBalanceService accountBalanceService;
 
-    public ContextEnricher(RagService ragService, TemporalMemoryService temporalMemoryService) {
+    public ContextEnricher(RagService ragService,
+                           TemporalMemoryService temporalMemoryService,
+                           AccountBalanceService accountBalanceService) {
         this.ragService = ragService;
         this.temporalMemoryService = temporalMemoryService;
+        this.accountBalanceService = accountBalanceService;
     }
 
     /**
@@ -56,11 +64,58 @@ public class ContextEnricher {
      * </ol>
      * Falls back to the original intent string if both sources return nothing.
      */
-    public String buildEnrichedIntent(String sessionId, String userIntent) {
+    public String buildEnrichedIntent(String sessionId, String userIntent, String callerUserId) {
         StringBuilder sb = new StringBuilder();
         int ragChars = 0;
         int temporalTurns = 0;
         List<String> approvedChannels = List.of();
+
+        // 0. Your identity — who the current user is
+        Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
+        String callerName = registry.getOrDefault(callerUserId, callerUserId);
+        sb.append("[YOUR IDENTITY]\n");
+        sb.append("You are assisting ").append(callerName).append(" (userId: ").append(callerUserId).append(").\n");
+        sb.append("Current time: ").append(
+                DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm z").withZone(ZoneId.of("Asia/Kolkata"))
+                        .format(Instant.now())).append("\n\n");
+
+        // 0b. Registered users — so LLM knows who can be a beneficiary
+        Map<String, String> accountRegistry = UserProfileInitializer.getDemoAccountRegistry();
+        // Invert: userId → accountNumber for easy lookup
+        Map<String, String> userToAccount = new java.util.HashMap<>();
+        for (var entry : accountRegistry.entrySet()) {
+            userToAccount.put(entry.getValue(), entry.getKey());
+        }
+
+        if (!registry.isEmpty()) {
+            sb.append("[REGISTERED USERS]\n");
+            sb.append("These are the users in the system. When the user wants to pay someone, ")
+              .append("match the beneficiary name or account number to one of these users:\n");
+            for (var entry : registry.entrySet()) {
+                if (!entry.getKey().equals(callerUserId)) {
+                    sb.append("- ").append(entry.getValue())
+                      .append(" (userId: ").append(entry.getKey());
+                    String acct = userToAccount.get(entry.getKey());
+                    if (acct != null) {
+                        sb.append(", account: ").append(acct);
+                    }
+                    sb.append(")\n");
+                }
+            }
+            sb.append("\n");
+        }
+
+        // 0c. Account state — balance + recent transactions so LLM can answer inline
+        try {
+            double balance = accountBalanceService.getCurrentBalance(callerUserId);
+            String callerAcct = userToAccount.get(callerUserId);
+            sb.append("[YOUR ACCOUNT]\n");
+            sb.append("Account: ").append(callerAcct != null ? callerAcct : "N/A");
+            sb.append(" | Balance: ₹").append(String.format("%.2f", balance));
+            sb.append(" | Currency: INR\n\n");
+        } catch (Exception e) {
+            log.debug("Session {}: Account context unavailable: {}", sessionId, e.getMessage());
+        }
 
         // 1. RAG — domain knowledge relevant to this query (budget managed by RagService)
         try {
@@ -73,8 +128,8 @@ public class ContextEnricher {
                 approvedChannels = extractApprovedChannels(ragContext);
                 if (!approvedChannels.isEmpty()) {
                     sb.append("[APPROVED CHANNELS]\n");
-                    sb.append("You MUST choose the payment channel exclusively from this list "
-                            + "(derived from the retrieved knowledge above): ");
+                    sb.append("Available channels in this context — pass the user-specified channel name to the tool as-is; "
+                            + "call the tool without a channel if unspecified (tool auto-selects): ");
                     sb.append(String.join(", ", approvedChannels)).append("\n\n");
                     log.info("Session {}: approved channels from RAG = {}", sessionId, approvedChannels);
                 }

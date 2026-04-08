@@ -25,7 +25,7 @@ public class ScoringModelConfig {
     @Value("${app.ai.reranker.top-k:2}")
     private Integer rerankerTopK;
 
-    @Value("${app.ai.http.request-timeout-seconds:600}")
+    @Value("${app.ai.http.request-timeout-seconds:900}")
     private Integer requestTimeout;
 
     @Bean

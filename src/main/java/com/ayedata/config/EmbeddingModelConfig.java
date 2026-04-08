@@ -22,7 +22,7 @@ public class EmbeddingModelConfig {
     @Value("${app.ai.embedding.model-name}")
     private String embeddingModelName;
 
-    @Value("${app.ai.http.request-timeout-seconds:600}")
+    @Value("${app.ai.http.request-timeout-seconds:900}")
     private Integer requestTimeout;
 
     @Bean

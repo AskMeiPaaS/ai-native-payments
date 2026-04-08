@@ -41,6 +41,7 @@ public class UserController {
                     Map<String, String> entry = new LinkedHashMap<>();
                     entry.put("userId", profile.getId());
                     entry.put("displayName", profile.getDisplayName());
+                    entry.put("accountNumber", profile.getBank_account());
                     return entry;
                 })
                 .toList();
@@ -64,6 +65,7 @@ public class UserController {
         response.put("displayName", profile.getDisplayName());
         response.put("email", profile.getEmail());
         response.put("phone", profile.getPhone());
+        response.put("accountNumber", profile.getBank_account());
         response.put("currency", profile.getCurrency());
         response.put("currentBalance", profile.getCurrentBalance());
         return ResponseEntity.ok(response);

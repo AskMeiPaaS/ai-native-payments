@@ -29,10 +29,11 @@ public class MongoLedgerService {
         /**
          * Executes the financial mandate switch / transfer atomically.
          * The LLM selects the payment channel from RAG-enriched context before invoking this method.
+         * If recipientUserId is non-null, the recipient's account is credited (P2P transfer).
          */
     @Transactional
     public String commitSwitchAtomic(String sessionId, String userId, String beneficiary, String targetBank,
-            double amount) {
+            double amount, String recipientUserId) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId is required");
         }
@@ -58,6 +59,41 @@ public class MongoLedgerService {
                 maskedUserId, amount, beneficiary, targetBank);
 
         double resultingBalance = accountBalanceService.debitBalance(resolvedUserId, amount);
+
+        // P2P: credit the recipient if they are a registered user
+        if (recipientUserId != null && !recipientUserId.isBlank()
+                && !recipientUserId.equalsIgnoreCase(resolvedUserId)) {
+            double recipientNewBalance = accountBalanceService.creditBalance(recipientUserId, amount);
+            log.info("P2P credit: ₹{} credited to recipient {}", amount, recipientUserId);
+
+            // Save a CREDIT transaction record for the recipient so their ledger/dashboard shows the deposit
+            String recipientTxnId = "TXN-PASS-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+            TransactionRecord recipientRecord = TransactionRecord.builder()
+                    .id(recipientTxnId)
+                    .sessionId(sessionId)
+                    .userId(recipientUserId)
+                    .instructionType("PASS_MONEY_RECEIVE")
+                    .status("SETTLED")
+                    .createdAt(Instant.now())
+                    .resultingBalance(recipientNewBalance)
+                    .paymentMethod(selectedPaymentMethod)
+                    .requiresHitlReview(false)
+                    .financialData(FinancialData.builder()
+                            .amount(amount)
+                            .merchantId(resolvedUserId)
+                            .recipientBank(selectedPaymentMethod)
+                            .donor_account(resolvedUserId)
+                            .recipient_account(recipientUserId)
+                            .build())
+                    .agentReasoningSnapshot(AgentReasoning.builder()
+                            .supervisorDecision("APPROVED")
+                            .contextSimilarityScore(0.98)
+                            .build())
+                    .build();
+            mongoTemplate.save(recipientRecord);
+            log.info("Recipient ledger entry saved: {} for user {}", recipientTxnId, recipientUserId);
+        }
+
         String txnId = "TXN-PASS-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
 
         TransactionRecord transaction = TransactionRecord.builder()

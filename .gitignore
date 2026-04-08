@@ -44,6 +44,9 @@ Thumbs.db
 /data/db/
 dump/
 
+# --- QE crypt_shared native binary (downloaded at build time) ---
+lib/qe-native/
+
 # --- Next.js / Node.js (Frontend) ---
 # Preparing for Phase 3
 node_modules/

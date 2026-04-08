@@ -269,6 +269,42 @@ a:hover { opacity: 0.8; }
 .stat-label { font-size: var(--text-xs); color: var(--text-2); }
 .stat-value { font-size: var(--text-lg); font-weight: 700; color: var(--text); }
 
+/* Token stats grid — 2×2 compact cells inside the sidebar */
+.token-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+.token-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--space-2) var(--space-3);
+}
+.token-stat__label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+}
+.token-stat__value {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text);
+}
+.token-stat__value--accent { color: var(--accent); }
+.token-stats-empty {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  padding: var(--space-2) 0;
+}
+
 /* Backend status pill */
 .backend-pill {
   display: flex;
@@ -441,12 +477,15 @@ a:hover { opacity: 0.8; }
 .message-group--agent { align-items: flex-start; }
 
 .message-bubble {
+  min-width: 120px;
   max-width: 72%;
   padding: var(--space-3) var(--space-4);
   border-radius: var(--r-xl);
   font-size: var(--text-sm);
   line-height: 1.65;
   word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 .message-bubble--user {
   background: var(--accent-dim);
@@ -465,7 +504,6 @@ a:hover { opacity: 0.8; }
 .message-meta {
   display: inline-flex;
   align-items: center;
-  margin-top: var(--space-2);
   padding: 3px 10px;
   border-radius: var(--r-full);
   background: var(--success-bg);
@@ -473,6 +511,16 @@ a:hover { opacity: 0.8; }
   font-size: 0.68rem;
   font-weight: 500;
   color: var(--success);
+  white-space: nowrap;
+}
+
+/* Footer row inside agent bubbles: holds channel badge + response-time side by side */
+.bubble-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 /* Payment channel badge: shown on agent messages when LLM+RAG selects a channel */
@@ -480,7 +528,6 @@ a:hover { opacity: 0.8; }
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-top: var(--space-2);
   padding: 3px 10px 3px 7px;
   border-radius: var(--r-full);
   font-size: 0.68rem;
@@ -488,6 +535,7 @@ a:hover { opacity: 0.8; }
   letter-spacing: 0.05em;
   text-transform: uppercase;
   border: 1px solid;
+  white-space: nowrap;
   transition: opacity var(--tr);
 }
 .channel-badge__dot {
@@ -700,7 +748,9 @@ a:hover { opacity: 0.8; }
 .txn-amount         { font-size: var(--text-xs); font-weight: 600; }
 .txn-amount--credit { color: var(--success); }
 .txn-amount--debit  { color: var(--danger); }
-.txn-status         { font-size: 0.65rem; color: var(--text-3); margin-top: 1px; }
+.txn-status         { font-size: 0.65rem; color: var(--text-3); margin-top: 1px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.txn-channel        { font-size: 0.6rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 3px; padding: 0 4px; line-height: 1.4; }
+.txn-timestamp      { font-size: 0.6rem; color: var(--text-3); margin-top: 1px; opacity: 0.75; }
 .txn-empty          { font-size: var(--text-xs); color: var(--text-3); padding: var(--space-2) 0; }
 
 /* ============================================================
@@ -1370,6 +1420,30 @@ a:hover { opacity: 0.8; }
   font-weight: 600;
   letter-spacing: 0.05em;
   white-space: nowrap;
+}
+
+.pii-reveal-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 1px 5px;
+  line-height: 1.4;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+
+.pii-reveal-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.pii-reveal-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* ============================================================

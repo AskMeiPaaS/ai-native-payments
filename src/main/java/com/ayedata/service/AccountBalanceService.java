@@ -136,8 +136,8 @@ public class AccountBalanceService {
         Map<String, Object> dashboard = new LinkedHashMap<>();
         dashboard.put("userId", profile.getId());
         dashboard.put("displayName", profile.getDisplayName());
-        dashboard.put("email", profile.getEmail());
-        dashboard.put("phone", profile.getPhone());
+        dashboard.put("email", maskEmail(profile.getEmail()));
+        dashboard.put("phone", maskPhone(profile.getPhone()));
         dashboard.put("currentBalance", roundCurrency(profile.getCurrentBalance()));
         dashboard.put("availableBalance", roundCurrency(profile.getCurrentBalance()));
         dashboard.put("currency", profile.getCurrency() == null ? DEFAULT_CURRENCY : profile.getCurrency());
@@ -146,12 +146,14 @@ public class AccountBalanceService {
         if (recentTransfers.isEmpty()) {
             dashboard.put("lastTransferAmount", 0.0);
             dashboard.put("lastTransferStatus", "NO_TRANSFERS_YET");
+            dashboard.put("lastPaymentMethod", "—");
             dashboard.put("lastTransactionType", "NONE");
         } else {
             TransactionRecord latestTransfer = recentTransfers.get(0);
             FinancialData financialData = latestTransfer.getFinancialData();
             dashboard.put("lastTransferAmount", financialData != null ? roundCurrency(financialData.getAmount()) : 0.0);
             dashboard.put("lastTransferStatus", latestTransfer.getStatus());
+            dashboard.put("lastPaymentMethod", latestTransfer.getPaymentMethod() != null ? latestTransfer.getPaymentMethod() : "—");
             String instrType = latestTransfer.getInstructionType();
             dashboard.put("lastTransactionType", (instrType != null && instrType.contains("RECEIVE")) ? "CREDIT" : "DEBIT");
         }
@@ -164,12 +166,53 @@ public class AccountBalanceService {
         return dashboard;
     }
 
+    public String revealPii(String userId, String field) {
+        String resolvedUserId = normalizeUserId(userId);
+        UserProfile profile = getOrCreateProfile(resolvedUserId);
+        String value = switch (field.toLowerCase()) {
+            case "email" -> profile.getEmail();
+            case "phone" -> profile.getPhone();
+            default -> throw new IllegalArgumentException("Unknown PII field: " + field);
+        };
+        log.info("[PII-REVEAL] userId={} field={} requestedAt={}", resolvedUserId, field, Instant.now());
+        return value != null ? value : "—";
+    }
+
+    private static String maskEmail(String email) {
+        if (email == null || email.isBlank()) return "—";
+        int atIdx = email.indexOf('@');
+        if (atIdx <= 0) return "\u2022".repeat(email.length());
+        String local = email.substring(0, atIdx);
+        String domain = email.substring(atIdx);
+        String visible = local.substring(0, Math.min(2, local.length()));
+        return visible + "\u2022".repeat(Math.max(3, local.length() - visible.length())) + domain;
+    }
+
+    private static String maskPhone(String phone) {
+        if (phone == null || phone.isBlank()) return "—";
+        String digits = phone.replaceAll("\\D", "");
+        if (digits.length() < 4) return "\u2022".repeat(phone.length());
+        int totalDigits = digits.length();
+        int[] digitCount = {0};
+        StringBuilder sb = new StringBuilder();
+        for (char ch : phone.toCharArray()) {
+            if (Character.isDigit(ch)) {
+                digitCount[0]++;
+                sb.append(totalDigits - digitCount[0] < 4 ? ch : '\u2022');
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
+    }
+
     private Map<String, Object> toTransferSummary(TransactionRecord transactionRecord) {
         Map<String, Object> transfer = new LinkedHashMap<>();
         transfer.put("id", transactionRecord.getId());
         transfer.put("status", transactionRecord.getStatus());
         transfer.put("createdAt", transactionRecord.getCreatedAt());
         transfer.put("resultingBalance", transactionRecord.getResultingBalance());
+        transfer.put("channel", transactionRecord.getPaymentMethod());
 
         String instrType = transactionRecord.getInstructionType();
         String transactionType = (instrType != null && instrType.contains("RECEIVE")) ? "CREDIT" : "DEBIT";

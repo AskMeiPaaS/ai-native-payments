@@ -8,15 +8,19 @@ A comprehensive guide to the AI-native financial orchestration platform built fo
 
 1. **Modular Package Layout** - Responsibility-based module map
 2. **Core AI-Native Components** - Multi-agent orchestration, LangChain4j, tools
-3. **Container & Microservices** - Docker topology, service configuration
+3. **Container & Microservices** - Docker topology, network config, service configuration
 4. **Data Flows, Streaming & Audit** - transaction processing, SSE lifecycle, session correlation
-5. **Semantic Memory Schemas** - MongoDB collections, embeddings, vector search
-6. **Responsible AI & PAIR** - privacy, fairness, explainability alignment
-7. **Human-in-the-Loop (HITL)** - user appeals, operator dashboard, escalation APIs
-8. **Performance & Resources** - connection pooling, timeouts, virtual threads
-9. **Build & Deployment** - Maven, Docker, containerization
-10. **Testing & Quality** - unit tests and modular feature coverage
-11. **Troubleshooting** - common errors, degraded-mode behavior, and fixes
+5. **Business Rules** - balance rules, channel routing, risk profiles, regulatory constraints
+6. **Semantic Memory Schemas** - MongoDB collections, embeddings, vector search
+7. **Responsible AI & PAIR** - privacy, fairness, explainability alignment
+8. **Human-in-the-Loop (HITL)** - user appeals, operator dashboard, escalation APIs
+9. **Database Initialization** - Queryable Encryption setup and seed data
+10. **Performance & Resources** - connection pooling, timeouts, virtual threads
+11. **Build & Deployment** - Maven, Docker, containerization
+12. **Testing & Quality** - unit tests and modular feature coverage
+13. **Troubleshooting** - common errors, degraded-mode behavior, and fixes
+14. **Architecture Principles** - design philosophy and guiding decisions
+15. **Future Enhancements** - planned capabilities and roadmap
 
 ---
 
@@ -31,8 +35,10 @@ The backend follows a responsibility-first package structure to keep the applica
 | `com.ayedata.config` | Mongo, Ollama, Voyage AI, HTTP client, and application wiring |
 | `com.ayedata.controller` | Shared sync/streaming APIs that are not feature-specific |
 | `com.ayedata.domain` | Payment and user models |
+| `com.ayedata.exception` | Global exception handlers |
 | `com.ayedata.hitl` | User appeals, operator workflows, escalation models, HITL database init |
 | `com.ayedata.init` | Cross-cutting bootstrap logic and infrastructure initialization |
+| `com.ayedata.payment` | Payment channel routing and switch implementations |
 | `com.ayedata.rag` | Knowledge seeding, retrieval, reranking, and vector-backed context services |
 | `com.ayedata.service` | Shared memory and ledger coordination services |
 
@@ -96,7 +102,28 @@ public class PaSSExecutionTools {
 }
 ```
 
-#### C. Semantic Memory Integration
+#### C. Confidence Assessment & Clarification
+
+To prevent uncertain LLM actions, the system enforces confidence tagging:
+
+- LLM responses must include `[Confidence: HIGH/MEDIUM/LOW]` tags
+- LOW confidence triggers clarification questions instead of tool calls
+- System prompt rules 13-15 guide confidence evaluation based on input clarity and context availability
+
+```java
+// In PaSSOrchestratorAgent.java
+private static final String SYSTEM_PROMPT = """
+You are the PaSS orchestrator...
+
+13. Assess confidence in your understanding: HIGH if clear intent and sufficient context, MEDIUM if some ambiguity but reasonable inference possible, LOW if unclear or missing critical information.
+
+14. Always include [Confidence: HIGH/MEDIUM/LOW] in your response.
+
+15. If LOW confidence, ask specific clarification questions instead of calling tools.
+""";
+```
+
+#### D. Semantic Memory Integration
 
 LangChain4j manages the platform's "brain":
 
@@ -106,7 +133,7 @@ LangChain4j manages the platform's "brain":
 
 ---
 
-## 2. Container & Microservices Architecture
+## 3. Container & Microservices Architecture
 
 ### Service Topology
 
@@ -118,7 +145,7 @@ LangChain4j manages the platform's "brain":
            │
     ┌──────▼────────────┐
     │      Ollama       │
-    │    qwen2.5:3b     │
+    │    qwen2.5:latest │
     │      11434        │
     └───────────────────┘
            │
@@ -173,11 +200,9 @@ api-gateway → https://api.voyageai.com/v1/embed      (Embedding requests)
 api-gateway → https://api.voyageai.com/v1/rerank     (Reranking requests)
 ```
 
----
+### 3.1 Docker Network Configuration
 
-## 3. Docker Network Configuration
-
-### Container URLs
+#### Container URLs
 
 **Local Services (Docker Internal Network):**
 
@@ -196,7 +221,7 @@ api-gateway → https://api.voyageai.com/v1/rerank     (Reranking requests)
 
 **Note:** MongoDB accessible from host: `mongodb://localhost:27017`
 
-### Environment Variables
+#### Environment Variables
 
 ```yaml
 # MongoDB
@@ -210,8 +235,8 @@ RERANKER_MODEL_NAME=rerank-lite-1   # Lightweight reranker
 
 # Local LLM (Ollama)
 LLM_BASE_URL=http://ollama:11434
-LLM_MODEL_NAME=qwen2.5:3b
-LLM_TIMEOUT_SECONDS=600
+LLM_MODEL_NAME=qwen2.5:latest
+LLM_TIMEOUT_SECONDS=900
 LLM_NUM_CTX=4096
 LLM_NUM_PREDICT=1024
 
@@ -220,7 +245,7 @@ RERANKER_TOP_K=2
 
 # HTTP Timeouts
 HTTP_CONNECT_TIMEOUT=10
-HTTP_REQUEST_TIMEOUT=600
+HTTP_REQUEST_TIMEOUT=900
 ```
 
 ---
@@ -394,19 +419,20 @@ sequenceDiagram
 
     LLM-->>Agent: onComplete(final response)
     Controller->>Audit: logChatTurn(sessionId, ...)
-    Controller-->>Browser: SSE event: complete
+    Controller-->>Browser: SSE event: complete {inputTokens, outputTokens, totalTokens, elapsedMs}
 ```
 
 **Streaming contract**
 - `start` — emitter created and request accepted.
 - `chunk` — incremental text delta from LangChain4j `TokenStream`.
-- `complete` — final metadata including status, latency, and `sessionId`.
+- `complete` — final metadata: `status`, `latency`, `sessionId`, `inputTokens`, `outputTokens`, `totalTokens`, `elapsedMs`.
 - `error` — terminal or recoverable failure signal so the UI can fall back cleanly.
 
 **Implementation details**
 - `PaSSController` owns `SseEmitter` lifecycle callbacks for timeout, completion, and disconnect handling.
+- `OllamaMetricsScheduler` passively records `TokenUsage` via `record(outputTokens, inputTokens, elapsedMs)` — no outbound HTTP probes.
+- `AgentChatDashboard.tsx` parses raw SSE frames; the `Sidebar` component renders a "Last Request Tokens" panel (In / Out / Total / tokens per second) populated from the `complete` event.
 - `agent-ui/src/app/api/v1/agent/orchestrate-stream/route.ts` exists specifically to prevent buffering from static rewrites.
-- `AgentChatDashboard.tsx` parses raw SSE frames and keeps response text separate from metadata badges.
 - A shared `sessionId` is propagated across streaming, sync calls, appeals, and audit records.
 
 ### Audit Correlation & Compliance Pipeline
@@ -443,11 +469,12 @@ The platform is designed to fail safely. Deterministic payment tools remain auth
 
 | Failure Source | Detection Point | Runtime Behavior | Audit Action |
 |---|---|---|---|
-| Ollama timeout or slow generation | LLM timeout callbacks | return partial stream or friendly fallback; never force a ledger write | record `ERROR` with model and latency |
+| Ollama timeout or slow generation | LLM timeout callbacks | return contextual error message ("AI took too long to respond"); friendly SSE error event | record `ERROR` with model and latency |
 | Browser disconnect during SSE | `SseEmitter.onCompletion/onError` | stop streaming cleanly and suppress noisy stack traces | warning only when relevant |
 | RAG or reranker unavailable | `RagService.retrieveContext()` | continue with compact base prompt and no retrieved snippets | log degraded enrichment event |
 | HITL fetch returns no escalations | operator dashboard fetch path | render empty-state `[]`, not an error banner | no compliance event required |
-| Unexpected controller exception | `GlobalAuditExceptionHandler` | structured JSON error response with safe message | persist session-correlated error record |
+| Unexpected controller exception | `GlobalAuditExceptionHandler` | contextual JSON error response (e.g., "Connection issue" instead of stack trace) | persist session-correlated error record |
+| LLM connection failure | `PaSSController` | contextual message classifying failure type (timeout, network, etc.) | structured error record |
 
 ```mermaid
 flowchart TD
@@ -472,7 +499,94 @@ flowchart TD
 
 ---
 
-## 5. Semantic Memory Schema
+## 5. Business Rules
+
+These rules are enforced in Java code and inform the LLM via RAG. The LLM operates within these constraints; the backend enforces them deterministically regardless of LLM output.
+
+### 5.1 Balance & Transaction Rules
+
+| Rule | Detail | Enforced In |
+|---|---|---|
+| Amount must be positive | `amount > 0` required for both debit and credit | `AccountBalanceService`, `LedgerTools` |
+| No overdraft | Debit rejected if `amount > currentBalance` | `AccountBalanceService.debitBalance()` |
+| No negative balance | Secondary check: rejects if result would be `< 0` | `AccountBalanceService.debitBalance()` |
+| Credit cap | Single top-up / receive cannot exceed ₹10,00,000 | `AccountBalanceService.creditBalance()`, `LedgerTools.receiveFunds()` |
+| No self-transfer | `transferFunds` blocks when beneficiary resolves to the caller's `userId` | `LedgerTools.transferFunds()` |
+| Required fields | `sessionId`, `userId`, `beneficiary`, and `targetBank` are all mandatory on `commitSwitchAtomic` | `MongoLedgerService.commitSwitchAtomic()` |
+
+### 5.2 Payment Channel Routing
+
+The LLM selects a channel from the RAG-approved list. `LedgerTools.pickBestChannel()` provides a programmatic fallback if the LLM omits the channel.
+
+| Amount Range | Auto-selected Channel | RAG Source |
+|---|---|---|
+| ≤ ₹500 | UPI Lite | `payment-routing-risk-matrix.txt` |
+| ₹501 – ₹1,00,000 | UPI | `payment-routing-risk-matrix.txt` |
+| ₹1,00,001 – ₹5,00,000 | NEFT | `payment-routing-risk-matrix.txt` |
+| > ₹5,00,000 | RTGS | `payment-routing-risk-matrix.txt` |
+
+> The user's explicitly named channel always overrides the auto-selection. The backend persists the LLM-chosen channel without re-routing.
+
+**Channel-amount validation (`LedgerTools.validateChannelForAmount`):**
+
+After the LLM picks a channel, `validateChannelForAmount(channel, amount)` cross-checks the choice against hard RBI amount rules before the ledger is written:
+
+| Rule | Violation response |
+|---|---|
+| UPI Lite — amount > ₹500 | `CHANNEL_MISMATCH: UPI Lite is only for ≤₹500. Corrected channel: UPI/NEFT/RTGS. Re-invoke with channel=X.` |
+| UPI — amount > ₹1,00,000 | `CHANNEL_MISMATCH: UPI limit is ₹1L. Corrected channel: NEFT/RTGS. Re-invoke with channel=X.` |
+| RTGS — amount < ₹2,00,000 | `CHANNEL_MISMATCH: RTGS minimum is ₹2L. Corrected channel: NEFT. Re-invoke with channel=X.` |
+| Cash — amount ≥ ₹2,00,000 | `CHANNEL_MISMATCH: Cash ≥₹2L violates Section 269ST. Corrected channel: NEFT/RTGS. Re-invoke with channel=X.` |
+
+On receiving a `CHANNEL_MISMATCH:` sentinel the LLM **automatically re-invokes the tool** with the corrected channel. The `@Tool` description instructs this behaviour explicitly. No ledger write occurs on a mismatch.
+
+### 5.3 Risk Profile Rules
+
+Based on the behavioral similarity score computed by `FraudContextService`.
+
+| Behavioral Score | Profile | Effect on Routing |
+|---|---|---|
+| ≥ 0.95 | LOW | Standard amount-based routing; auto-approve within trusted partner limits |
+| 0.80 – 0.94 | MEDIUM | Standard routing + monitoring flags; auto-approve thresholds halved |
+| 0.60 – 0.79 | HIGH | NEFT preferred over UPI; HITL required for transactions above ₹25,000; new-beneficiary UPI blocked |
+| < 0.60 | CRITICAL | HITL mandatory for ALL transactions; UPI capped at ₹10,000/txn; high-value channels (RTGS, high-value NEFT) blocked |
+
+### 5.4 Trusted Partner Tier Rules
+
+Partner tiers provide auto-approval thresholds that override HITL escalation.
+
+| Tier | Criteria | UPI Auto-approve | NEFT Auto-approve | RTGS Auto-approve |
+|---|---|---|---|---|
+| Tier 1 — Established | 50+ txns, 1+ yr, zero fraud, KYC current | up to ₹1,00,000 | up to ₹5,00,000 | up to ₹10,00,000 |
+| Tier 2 — Regular | 10–49 txns, 3+ months, <1% dispute | up to ₹50,000 | up to ₹2,00,000 | up to ₹5,00,000 |
+| Tier 3 — New | < 10 txns or < 3 months | up to ₹25,000 | up to ₹1,00,000 | HITL required |
+| Unverified / High-risk | No history, failed KYC, or prior fraud | HITL above ₹5,000 | HITL above ₹5,000 | Blocked |
+
+Cash auto-accept limits: Tier 1 ₹50,000 · Tier 2 ₹20,000 · Tier 3 HITL above ₹10,000 · Unverified max ₹2,000.
+
+### 5.5 Regulatory Constraints (Indian Payment Law)
+
+These rules are sourced from `indian-payment-regulatory-framework.txt` in the RAG knowledge base.
+
+| Rule | Detail |
+|---|---|
+| Cash ban above ₹2,00,000 | Illegal under Section 269ST — 100% penalty on recipient |
+| PAN mandatory above ₹50,000 | Cash transactions require PAN documentation |
+| Business cash deductibility | Cash payments above ₹10,000 not tax-deductible (Section 40A(3)) |
+| AML screening | Mandatory for all transactions above ₹10,00,000 |
+| STR filing | Required when suspicious patterns are detected under CRITICAL risk profile |
+
+### 5.6 Input Validation Rules
+
+| Field | Rule | Enforced In |
+|---|---|---|
+| `userId` | Must match `^[a-zA-Z0-9_]{4,64}$` | `FraudContextService.getBehavioralSimilarityScore()` |
+| `sessionId` | Validated by regex; must not be null or blank | `PaSSController`, `MongoLedgerService` |
+| CORS origins | Restricted to `${app.cors.allowed-origins:http://localhost:3000}` | Spring Security config |
+
+---
+
+## 6. Semantic Memory Schema
 
 ### A. Long-Term Memory (user_profiles)
 
@@ -570,7 +684,7 @@ Immutable audit trail for regulators:
   "related_transaction": "TXN_PASS_55443322",
   "event_type": "FRAUD_INTERVENTION",
   "timestamp": ISODate("2026-03-29T21:25:00Z"),
-  "model_used": "qwen2.5:3b",
+  "model_used": "qwen2.5:latest",
   "inputs": {
     "metadata_snapshot": {
       "network_latency": "400ms",
@@ -587,15 +701,32 @@ Immutable audit trail for regulators:
 
 ---
 
-## 6. Responsible AI & PAIR Alignment
+## 7. Responsible AI & PAIR Alignment
 
 ### Privacy by Design: MongoDB Queryable Encryption (QE)
 
 **Queryable Encryption Implementation:**
-- **Automatic Encryption:** PII fields (SSN, bank account, email) encrypted client-side before transmission
+- **Automatic Encryption:** PII fields (SSN, bank account, email, phone) encrypted client-side before transmission
 - **Server-Side Processing:** MongoDB stores ciphertext; searching on encrypted fields supported natively
 - **Zero-Knowledge Architecture:** Server never sees plaintext PII; decryption happens only in trusted Java layer
 - **LLMs Never See PII:** Prompts contain encrypted tokens, never plaintext financial data
+
+**Dashboard PII Masking + Server-Side Reveal:**
+
+`AccountBalanceService.getDashboard()` serves `email` and `phone` masked by default — the MongoDB QE driver decrypts the value, then the service applies a masking helper before the HTTP response:
+
+| Field | Masked form (served by default) | Example |
+|---|---|---|
+| `email` | First 2 chars + `•••` + full domain | `ra•••@example.com` |
+| `phone` | Non-digit separators preserved, all but last 4 digits masked | `+91••••••3210` |
+
+Users click the 👁️ button on the dashboard UI to decrypt:
+1. Browser calls `GET /api/v1/account/reveal-pii?userId=&field=email` (or `phone`)
+2. `AccountBalanceService.revealPii()` reads the profile (QE driver decrypts transparently) and returns the plaintext value
+3. Service logs `[PII-REVEAL] userId=… field=… requestedAt=…` at INFO level for compliance audit
+4. UI shows the plaintext; a second click re-masks locally (no server round-trip)
+
+> **Why not pure client-side masking?** The HTTP response body previously contained the plaintext string, meaning any browser dev-tools inspection or network proxy would reveal PII. The server-side masking ensures the raw wire value is always the masked form unless the user explicitly requests the reveal.
 
 **QE Key Generation:**
 - Master encryption key generated in `DatabaseInitializer.java` during app startup
@@ -731,9 +862,9 @@ User sees: "We noticed you're logging in from a new city today.
 
 ---
 
-## 7. Human-in-the-Loop (HITL) Architecture
+## 8. Human-in-the-Loop (HITL) Architecture
 
-### 7.1 Transaction Reference & User Tracking
+### 8.1 Transaction Reference & User Tracking
 
 **Transaction ID Lifecycle:**
 
@@ -753,7 +884,7 @@ User sees: "We noticed you're logging in from a new city today.
    └─ User sees: "Transaction confirmed: TXN_PASS_55443322"
 ```
 
-### 7.2 Escalation Triggers
+### 8.2 Escalation Triggers
 
 **System-Initiated Escalation:**
 1. Context Agent confidence score < threshold (e.g., 0.80)
@@ -767,7 +898,7 @@ User sees: "We noticed you're logging in from a new city today.
 2. User explicitly requests manual review
 3. User disagrees with AI decision and wants operator input
 
-### 7.3 REST API Endpoints
+### 8.3 REST API Endpoints
 
 #### User-Facing Endpoints (Chat UI)
 
@@ -946,7 +1077,7 @@ Response (200 OK):
 }
 ```
 
-### 7.3 Frontend Components
+### 8.4 Frontend Components
 
 #### HitlAppealButton Component
 
@@ -1018,7 +1149,7 @@ Escalation List
     └── [Cancel Button]
 ```
 
-### 7.4 Data Model: HitlEscalationRecord
+### 8.5 Data Model: HitlEscalationRecord
 
 **MongoDB Collection:** `hitl_escalations`
 
@@ -1050,7 +1181,7 @@ db.hitl_escalations.createIndex({ "transactionId": 1 });
 db.hitl_escalations.createIndex({ "operatorId": 1, "resolvedAt": -1 });
 ```
 
-### 7.5 Service Layer: HitlEscalationService
+### 8.6 Service Layer: HitlEscalationService
 
 **Location:** `src/main/java/com/ayedata/service/HitlEscalationService.java`
 
@@ -1095,7 +1226,7 @@ HitlEscalationRecord resolved = hitlEscalationService.resolveEscalation(
 // Now contains: transactionId = "TXN_PASS_55443322"
 ```
 
-### 7.6 Escalation Lifecycle Diagram
+### 8.7 Escalation Lifecycle Diagram
 
 ```
 User Request
@@ -1151,7 +1282,7 @@ User Request
         └──────────────────────────────┘
 ```
 
-### 7.7 Request/Response Flow Sequence
+### 8.8 Request/Response Flow Sequence
 
 ```
 sequenceDiagram
@@ -1197,7 +1328,7 @@ sequenceDiagram
     Frontend-->>User: "Transaction approved by operator"
 ```
 
-### 7.8 Status Transition Rules
+### 8.9 Status Transition Rules
 
 **Valid State Transitions:**
 
@@ -1219,7 +1350,7 @@ PENDING_HUMAN_REVIEW
 
 **Cannot transition from RESOLVED states** - immutable for audit compliance.
 
-### 7.9 Security & Access Control
+### 8.10 Security & Access Control
 
 **For Production Deployment, Implement:**
 
@@ -1253,7 +1384,7 @@ PENDING_HUMAN_REVIEW
 
 ---
 
-## 7.10 Database Initialization with Queryable Encryption
+## 9. Database Initialization with Queryable Encryption
 
 ### DatabaseInitializer (Init Operation with Queryable Encryption)
 
@@ -1429,7 +1560,31 @@ public class QueryableEncryptionService {
 
 ---
 
-## 8. Performance & Resource Management
+## 10. Performance & Resource Management
+
+### LLM Token Metrics (`OllamaMetricsScheduler`)
+
+`OllamaMetricsScheduler` is a purely **passive** performance recorder — it makes no outbound HTTP calls and cannot timeout.
+
+**How it works:**
+1. `PaSSController.onCompleteResponse()` extracts real `TokenUsage` from the completed LangChain4j `TokenStream` and calls `ollamaMetrics.record(outputTokens, inputTokens, elapsedMs)`.
+2. The scheduler stores the last snapshot in an `AtomicReference<Snapshot>`.
+3. A `@Scheduled(fixedDelay = 30_000)` job logs the snapshot at INFO level (age, tokens, t/s) — useful for slow-hardware diagnostics.
+4. The SSE `complete` event carries `inputTokens`, `outputTokens`, `totalTokens`, and `elapsedMs` so the browser can display real-time throughput without polling.
+
+```
+PaSSController ──► ollamaMetrics.record(out, in, elapsedMs)
+                         │
+                         └──► AtomicReference<Snapshot>
+                                     │
+                         @Scheduled LOG every 30s
+                                     │
+                 SSE complete event ──► { inputTokens, outputTokens, totalTokens, elapsedMs }
+                         │
+                    Sidebar.tsx ──► "Last Request Tokens" panel (In / Out / Total / t/s)
+```
+
+> **Previous behaviour (removed):** A `@Scheduled` probe sent `POST /api/generate` with `stream=false` to Ollama to measure latency. When Ollama was busy with a real streaming request, the probe timed out and produced `[scheduling-1] WARN Probe failed: request timed out` noise. The passive recorder eliminates this entirely.
 
 ### Connection Pool Configuration
 
@@ -1484,7 +1639,7 @@ HttpClient httpClient = HttpClient.newBuilder()
 
 ---
 
-## 9. Build & Deployment
+## 11. Build & Deployment
 
 ### Maven Build
 
@@ -1537,7 +1692,7 @@ app.http.request.timeout.seconds=30
 
 ---
 
-## 10. Testing & Quality
+## 12. Testing & Quality
 
 ### Unit Tests (24 tests - all passing)
 
@@ -1654,7 +1809,7 @@ curl -X POST http://localhost:8080/api/v1/operator/escalations/{escalation_id}/a
 
 ---
 
-## 11. Troubleshooting Guide
+## 13. Troubleshooting Guide
 
 ### Build Fails with Lombok Errors
 
@@ -1732,7 +1887,7 @@ curl http://localhost:8080/api/v1/operator/escalations/pending | jq
 
 ---
 
-## 12. Architecture Principles
+## 14. Architecture Principles
 
 | Principle | Application |
 |-----------|:----------:|
@@ -1749,7 +1904,7 @@ curl http://localhost:8080/api/v1/operator/escalations/pending | jq
 
 ---
 
-## 13. Future Enhancements
+## 15. Future Enhancements
 
 - [ ] Multi-language LLM support (expand beyond qwen)
 - [ ] Advanced anomaly detection with statistical baselines

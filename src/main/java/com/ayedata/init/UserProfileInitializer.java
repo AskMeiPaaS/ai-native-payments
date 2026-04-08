@@ -13,7 +13,9 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Seeds a fixed set of demo users into the {@code user_profiles} collection on startup.
@@ -30,16 +32,27 @@ public class UserProfileInitializer {
 
     private static final String DEMO_USERS_RESOURCE = "seeds/demo-users.json";
     private static volatile List<String> demoUserIds = List.of();
+    private static volatile Map<String, String> demoUserRegistry = Map.of();
+    private static volatile Map<String, String> demoAccountRegistry = Map.of();
 
     private final MongoTemplate primaryTemplate;
     private final List<DemoUser> demoUsers;
 
     public UserProfileInitializer(
-            @Qualifier("primaryMongoTemplate") MongoTemplate primaryTemplate,
-            ObjectMapper objectMapper) {
+            @Qualifier("primaryMongoTemplate") MongoTemplate primaryTemplate) {
         this.primaryTemplate = primaryTemplate;
-        this.demoUsers = loadDemoUsers(objectMapper);
+        this.demoUsers = loadDemoUsers(new ObjectMapper());
         demoUserIds = this.demoUsers.stream().map(DemoUser::userId).toList();
+        Map<String, String> registry = new LinkedHashMap<>();
+        Map<String, String> accounts = new LinkedHashMap<>();
+        for (DemoUser u : this.demoUsers) {
+            registry.put(u.userId(), u.displayName());
+            if (u.accountNumber() != null) {
+                accounts.put(u.accountNumber(), u.userId());
+            }
+        }
+        demoUserRegistry = Collections.unmodifiableMap(registry);
+        demoAccountRegistry = Collections.unmodifiableMap(accounts);
     }
 
     /**
@@ -72,6 +85,49 @@ public class UserProfileInitializer {
         return demoUserIds;
     }
 
+    /**
+     * Returns userId→displayName map of all registered demo users.
+     */
+    public static Map<String, String> getDemoUserRegistry() {
+        return demoUserRegistry;
+    }
+
+    /**
+     * Returns accountNumber→userId map of all registered demo users.
+     */
+    public static Map<String, String> getDemoAccountRegistry() {
+        return demoAccountRegistry;
+    }
+
+    /**
+     * Resolves a free-text beneficiary (userId, full name, first name, or account number) to a registered userId.
+     * Returns null if no match is found.
+     */
+    public static String resolveUserIdByNameOrId(String input) {
+        if (input == null || input.isBlank()) return null;
+        String trimmed = input.trim();
+
+        // Exact userId match (case-insensitive)
+        for (var entry : demoUserRegistry.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(trimmed)) return entry.getKey();
+        }
+        // Exact account number match
+        String byAccount = demoAccountRegistry.get(trimmed);
+        if (byAccount != null) return byAccount;
+
+        // Exact displayName match (case-insensitive)
+        for (var entry : demoUserRegistry.entrySet()) {
+            if (entry.getValue().equalsIgnoreCase(trimmed)) return entry.getKey();
+        }
+        // Partial match: beneficiary is a substring of displayName (e.g. "Arjun" matches "Arjun Kumar")
+        String lower = trimmed.toLowerCase();
+        for (var entry : demoUserRegistry.entrySet()) {
+            String dispLower = entry.getValue().toLowerCase();
+            if (dispLower.contains(lower)) return entry.getKey();
+        }
+        return null;
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -83,6 +139,7 @@ public class UserProfileInitializer {
         // Auto encryption is applied by the MongoDB driver based on QE schema map.
         profile.setEmail(demo.email());
         profile.setPhone(demo.phone());
+        profile.setBank_account(demo.accountNumber());
         profile.setCurrentBalance(demo.openingBalance());
         profile.setCurrency("INR");
         profile.setLastUpdatedAt(Instant.now());
@@ -117,5 +174,6 @@ public class UserProfileInitializer {
             String displayName,
             String email,
             String phone,
+            String accountNumber,
             double openingBalance) {}
 }

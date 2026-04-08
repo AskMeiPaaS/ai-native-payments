@@ -8,6 +8,34 @@ DOWNLOAD_URL="${QE_IT_CRYPT_SHARED_LIB_URL:-${MONGODB_QE_CRYPT_SHARED_LIB_URL:-}
 DOWNLOAD_SHA256="${QE_IT_CRYPT_SHARED_LIB_SHA256:-${MONGODB_QE_CRYPT_SHARED_LIB_SHA256:-}}"
 DEFAULT_SOURCE_DIR="src/main/resources/qe-native"
 
+read_magic() {
+  od -An -tx1 -N4 "$1" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
+}
+
+validate_binary_for_extension() {
+  candidate="$1"
+  ext="$2"
+  magic=$(read_magic "$candidate")
+
+  case "$ext" in
+    so)
+      [ "$magic" = "7f454c46" ] || {
+        echo "[bundle-qe-lib] Invalid .so binary format (expected ELF) for $candidate"
+        exit 1
+      }
+      ;;
+    dylib)
+      case "$magic" in
+        cffaedfe|cefaedfe|feedfacf|feedface) ;;
+        *)
+          echo "[bundle-qe-lib] Invalid .dylib binary format (expected Mach-O) for $candidate"
+          exit 1
+          ;;
+      esac
+      ;;
+  esac
+}
+
 mkdir -p "$TARGET_DIR"
 
 TMP_DIR=""
@@ -76,12 +104,13 @@ fi
 if [ -d "$SOURCE_PATH" ]; then
   FOUND_LIBS=$(find "$SOURCE_PATH" -maxdepth 1 -name 'mongo_crypt_v1.*' | sort)
   if [ -z "${FOUND_LIBS:-}" ]; then
-    echo "[bundle-qe-lib] No mongo_crypt_v1.* files found in directory: $SOURCE_PATH"
-    exit 1
+    echo "[bundle-qe-lib] No mongo_crypt_v1.* files found in directory: $SOURCE_PATH; skipping library bundling."
+    exit 0
   fi
   echo "$FOUND_LIBS" | while IFS= read -r file; do
     [ -z "$file" ] && continue
     EXT="${file##*.}"
+    validate_binary_for_extension "$file" "$EXT"
     TARGET_LIB="$TARGET_DIR/mongo_crypt_v1.$EXT"
     cp "$file" "$TARGET_LIB"
     chmod 755 "$TARGET_LIB"
@@ -116,6 +145,7 @@ if [ ! -f "$SOURCE_REAL" ]; then
 fi
 
 EXT="${SOURCE_BASENAME##*.}"
+validate_binary_for_extension "$SOURCE_REAL" "$EXT"
 TARGET_LIB="$TARGET_DIR/mongo_crypt_v1.$EXT"
 
 cp "$SOURCE_REAL" "$TARGET_LIB"

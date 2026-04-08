@@ -1,21 +1,32 @@
 package com.ayedata.controller;
 
 import com.ayedata.ai.agent.PaSSOrchestratorAgent;
+import com.ayedata.config.OllamaMetricsScheduler;
 import com.ayedata.controller.dto.AgentRequest;
 import com.ayedata.audit.service.AuditLoggingService;
+import com.ayedata.config.MongoChatMemoryStore;
+import dev.langchain4j.model.output.TokenUsage;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.data.message.TextContent;
 import dev.langchain4j.service.TokenStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Map;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import static com.ayedata.controller.SseEmitterHelper.*;
 
@@ -31,21 +42,68 @@ public class PaSSController {
 
     private final PaSSOrchestratorAgent orchestratorAgent;
     private final AuditLoggingService auditLoggingService;
+    private final MongoChatMemoryStore chatMemoryStore;
+    private final OllamaMetricsScheduler ollamaMetrics;
 
     public PaSSController(PaSSOrchestratorAgent orchestratorAgent,
-                          AuditLoggingService auditLoggingService) {
+                          AuditLoggingService auditLoggingService,
+                          MongoChatMemoryStore chatMemoryStore,
+                          OllamaMetricsScheduler ollamaMetrics) {
         this.orchestratorAgent = orchestratorAgent;
         this.auditLoggingService = auditLoggingService;
+        this.chatMemoryStore = chatMemoryStore;
+        this.ollamaMetrics = ollamaMetrics;
+    }
+
+    /**
+     * Retrieve displayable chat history for a session.
+     * Returns only USER and AI messages (no system/tool-execution internals).
+     */
+    @GetMapping("/chat-history")
+    public ResponseEntity<Map<String, Object>> getChatHistory(@RequestParam String sessionId) {
+        List<ChatMessage> allMessages = chatMemoryStore.getMessages(sessionId);
+
+        List<Map<String, String>> history = new ArrayList<>();
+        for (ChatMessage msg : allMessages) {
+            if (msg instanceof UserMessage um) {
+                String text = um.contents().stream()
+                        .filter(c -> c instanceof TextContent)
+                        .map(c -> ((TextContent) c).text())
+                        .collect(Collectors.joining("\n"));
+                // Strip the enriched context — only keep text after [CURRENT REQUEST]
+                int markerIdx = text.indexOf("[CURRENT REQUEST]");
+                String displayText = (markerIdx >= 0)
+                        ? text.substring(markerIdx + "[CURRENT REQUEST]".length()).trim()
+                        : text;
+                if (!displayText.isBlank()) {
+                    history.add(Map.of("role", "user", "content", displayText));
+                }
+            } else if (msg instanceof AiMessage ai && ai.text() != null && !ai.text().isBlank()) {
+                history.add(Map.of("role", "agent", "content", ai.text()));
+            }
+        }
+
+        return ResponseEntity.ok(Map.of("sessionId", sessionId, "messages", history));
+    }
+
+    /**
+     * Delete chat history for a session (used by "New Chat").
+     */
+    @DeleteMapping("/chat-history")
+    public ResponseEntity<Map<String, String>> clearChatHistory(@RequestParam String sessionId) {
+        chatMemoryStore.deleteMessages(sessionId);
+        log.info("Chat history cleared for session {}", sessionId);
+        return ResponseEntity.ok(Map.of("status", "cleared", "sessionId", sessionId));
     }
 
     @PostMapping("/orchestrate")
     public ResponseEntity<Map<String, String>> orchestrateRequest(@RequestBody AgentRequest request) {
-        log.info("Received PaSS intent for session {}: {}", request.getSessionId(), request.getUserIntent());
+        log.info("Received PaSS intent for session {} (user={}): {}", request.getSessionId(), request.getUserId(), request.getUserIntent());
         long startTime = System.currentTimeMillis();
 
         try {
             String agentReply = orchestratorAgent.orchestrateSwitch(
-                    request.getSessionId(), request.getUserIntent());
+                    request.getSessionId(), request.getUserId(), request.getUserIntent());
             long elapsedMs = System.currentTimeMillis() - startTime;
 
             auditLoggingService.logChatTurn(
@@ -64,15 +122,17 @@ public class PaSSController {
                     "Synchronous orchestration failed for user intent: " + request.getUserIntent(),
                     ex
             );
-            throw ex;
+            log.error("❌ Session {}: Sync orchestration failed", request.getSessionId(), ex);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("reply", SseEmitterHelper.contextualErrorMessage(ex)));
         }
     }
 
     @PostMapping("/orchestrate-stream")
     public SseEmitter orchestrateStreamingRequest(@RequestBody AgentRequest request) throws IOException {
-        log.info("Received streaming PaSS intent for session {}: {}", request.getSessionId(), request.getUserIntent());
+        log.info("Received streaming PaSS intent for session {} (user={}): {}", request.getSessionId(), request.getUserId(), request.getUserIntent());
 
-        SseEmitter emitter = new SseEmitter(600000L);
+        SseEmitter emitter = new SseEmitter(900000L);
         AtomicBoolean emitterCompleted = new AtomicBoolean(false);
 
         // Register lifecycle callbacks so we stop sending when client disconnects
@@ -135,7 +195,7 @@ public class PaSSController {
 
                 // Get the token stream from the streaming supervisor
                 TokenStream tokenStream = orchestratorAgent.orchestrateSwitchStreaming(
-                        request.getSessionId(), request.getUserIntent());
+                        request.getSessionId(), request.getUserId(), request.getUserIntent());
 
                 AtomicInteger charCount = new AtomicInteger(0);
                 StringBuilder fullReply = new StringBuilder();
@@ -166,8 +226,21 @@ public class PaSSController {
                             try {
                                 heartbeatDone.set(true); // stop heartbeat thread
                                 long elapsedMs = System.currentTimeMillis() - startTime;
+
+                                // Extract real token counts from LangChain4j TokenUsage
+                                TokenUsage tu = response.tokenUsage();
+                                int inputTokens  = (tu != null && tu.inputTokenCount()  != null) ? tu.inputTokenCount()  : 0;
+                                int outputTokens = (tu != null && tu.outputTokenCount() != null) ? tu.outputTokenCount() : 0;
+                                int totalTokens  = (tu != null && tu.totalTokenCount()  != null) ? tu.totalTokenCount()  : inputTokens + outputTokens;
+
+                                // Record real-request performance (no synthetic probe needed)
+                                ollamaMetrics.record(outputTokens, inputTokens, elapsedMs);
+
                                 Map<String, Object> completeData = new LinkedHashMap<>();
                                 completeData.put("elapsedMs", elapsedMs);
+                                completeData.put("inputTokens", inputTokens);
+                                completeData.put("outputTokens", outputTokens);
+                                completeData.put("totalTokens", totalTokens);
                                 completeData.put("message", String.format("✅ Completed in %.2f seconds", elapsedMs / 1000.0));
                                 SseEmitter.SseEventBuilder completeEvent = SseEmitter.event()
                                         .id(request.getSessionId())
@@ -195,10 +268,13 @@ public class PaSSController {
                                 }
                             } catch (Exception e) {
                                 log.warn("Session {}: Error sending complete event", request.getSessionId(), e);
+                            } finally {
+                                orchestratorAgent.cleanupStreamingSession(request.getSessionId());
                             }
                         })
                         .onError(error -> {
                             heartbeatDone.set(true); // stop heartbeat thread
+                            orchestratorAgent.cleanupStreamingSession(request.getSessionId());
                             log.error("Session {}: Streaming error from LLM", request.getSessionId(), error);
                             auditLoggingService.logErrorEvent(
                                     "STREAMING_ORCHESTRATION_FAILED",
@@ -206,12 +282,13 @@ public class PaSSController {
                                     "Streaming orchestration failed for user intent: " + request.getUserIntent(),
                                     error
                             );
-                            tryCompleteEmitterWithError(emitter, new RuntimeException(error),
+                            sendErrorEventAndComplete(emitter, error,
                                     request.getSessionId(), emitterCompleted);
                         })
                         .start();
 
             } catch (Exception e) {
+                orchestratorAgent.cleanupStreamingSession(request.getSessionId());
                 log.error("Session {}: Streaming setup error", request.getSessionId(), e);
                 auditLoggingService.logErrorEvent(
                         "STREAMING_SETUP_FAILED",
@@ -219,7 +296,7 @@ public class PaSSController {
                         "Failed to initialize streaming for user intent: " + request.getUserIntent(),
                         e
                 );
-                tryCompleteEmitterWithError(emitter, e, request.getSessionId(), emitterCompleted);
+                sendErrorEventAndComplete(emitter, e, request.getSessionId(), emitterCompleted);
             }
         });
 

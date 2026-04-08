@@ -1,6 +1,7 @@
 package com.ayedata.audit.exception;
 
 import com.ayedata.audit.service.AuditLoggingService;
+import com.ayedata.controller.SseEmitterHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -82,8 +83,8 @@ public class GlobalAuditExceptionHandler {
 
         Map<String, String> body = new LinkedHashMap<>();
         body.put("status", "ERROR");
-        body.put("message", "Our AI orchestration encountered an unexpected issue.");
-        body.put("action", "Please use the 'Speak to Human' tool to safely resolve this transaction.");
+        body.put("message", SseEmitterHelper.contextualErrorMessage(ex));
+        body.put("retryable", "true");
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .contentType(MediaType.APPLICATION_JSON)

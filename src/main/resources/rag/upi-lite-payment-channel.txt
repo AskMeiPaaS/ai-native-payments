@@ -1,0 +1,93 @@
+UPI Lite — Indian Payment Channel Risk & Routing Guide
+
+Overview:
+UPI Lite is a lightweight, on-device wallet feature built on top of the Unified Payments Interface (UPI) ecosystem, introduced by NPCI and RBI in September 2022. It is optimised for high-volume, low-value (micro) payments where speed and offline-readiness are paramount. Funds are pre-loaded from the user's linked bank account into an on-device UPI Lite wallet; debit transactions happen locally without a bank server round-trip, making payments significantly faster and more resilient to network fluctuations. No UPI PIN is required for UPI Lite transactions, reducing friction to near-zero.
+
+Key Differentiators from Standard UPI:
+- No UPI PIN required for every debit — wallet pre-authorised at top-up time
+- Transactions processed on-device; no bank auth server call per payment
+- Faster settlement: sub-second merchant confirmation in most scenarios
+- Designed for contactless / NFC tap-to-pay at offline merchants
+- Cannot be used for P2P collect requests or recurring mandates
+- Exclusively for real-time, push-only (payer-initiated) payments
+
+Regulatory Basis:
+- RBI circular on Payments Infrastructure Development Fund, Sep 2022
+- NPCI UPI Lite product circular NPCI/UPI/OC No. 148/2022-23
+- RBI Master Direction on Prepaid Payment Instruments (PPIs) — UPI Lite treated as a limited-purpose PPI
+
+Transaction Limits (RBI-mandated, as of 2024–2025):
+- Maximum per transaction: ₹500
+- Maximum wallet balance: ₹2,000
+- No minimum transaction amount
+- No limit on number of transactions per day from the wallet
+- Top-up (load) limit: ₹2,000 per load, minimum ₹100 per load
+- Wallet auto-reload: supported via UPI AutoPay mandate (below ₹15,000/month)
+
+Settlement:
+- Debit: Instant, on-device
+- Merchant credit: Real-time via NPCI switch (treated same as UPI P2M settlement)
+- Top-up debit from bank: Instant UPI debit to pre-load wallet
+
+Charges:
+- Zero MDR for merchants (government-mandated, same as standard UPI)
+- No transaction fee for end users
+- No charges for wallet top-up
+
+Availability:
+- 24x7x365
+- Offline-capable: transactions succeed even during intermittent internet outages (debit queued on-device, settled when connectivity resumes)
+- Supported apps: Google Pay, PhonePe, Paytm, BHIM UPI, and major bank UPI apps
+
+Use Cases (Best-Fit Scenarios):
+- Canteen / cafeteria payments under ₹500
+- Auto-rickshaw / metro / bus tap-to-pay fares
+- Vending machine payments
+- Small grocery / kirana store purchases
+- Coffee shop / QSR (Quick Service Restaurant) payments
+- Micro-loan repayments under ₹500
+- In-app micro-purchases (gaming, streaming top-ups)
+
+When to Auto-Select UPI Lite (System Rule):
+If a transfer or receive request does NOT specify a payment channel AND the amount is ≤ ₹500, UPI Lite MUST be selected automatically. No user confirmation or PIN prompt should be shown. This is the primary routing rule for micro-payments in the PaSS platform.
+
+Risk Profile:
+LOW RISK (₹0 – ₹500 — entire UPI Lite range):
+- All UPI Lite transactions are inherently low-value and low-risk
+- No PIN friction — wallet was pre-authorised at top-up
+- Minimal fraud monitoring overhead required
+- Auto-approve for all users without HITL review
+- Velocity cap: monitor if >50 transactions/hour from single wallet (may indicate compromised device)
+
+Fraud Patterns Specific to UPI Lite:
+- Device theft: stolen device with unlocked screen can spend wallet balance up to ₹2,000 without PIN — risk is limited to wallet ceiling (₹2,000 maximum exposure)
+- Malicious app draining wallet: rogue merchant app initiates repeated ₹500 collections
+- Wallet reload abuse: rapid top-ups followed by immediate spend to launder small amounts
+- QR code substitution at offline merchants: merchant QR replaced by fraudster QR in low-supervision settings
+Mitigation: device binding, wallet balance ceiling (₹2,000 hard limit), per-session velocity monitoring, merchant QR integrity checks
+
+Trusted Partner Framework for UPI Lite:
+- No tiered trust framework required — all transactions auto-approved (amount ceiling provides natural risk control)
+- New users: auto-approve from day one (no cooling period for amounts ≤ ₹500)
+- Trusted partner score threshold: N/A (below HITL trigger floor)
+
+HITL Escalation Policy:
+- Never escalate UPI Lite transactions to HITL — amount ceiling eliminates need
+- Exception: if fraud score > 0.95 from behavioural model (extremely rare for ₹500 transactions)
+
+Channel Eligibility Summary:
+- ELIGIBLE: Any payment ≤ ₹500 where payer initiates the transfer
+- NOT ELIGIBLE: Amounts > ₹500 (use UPI, NEFT, RTGS, or Cheque)
+- NOT ELIGIBLE: P2P collect requests (payer must push; payee cannot pull via UPI Lite)
+- NOT ELIGIBLE: Recurring mandates / UPI AutoPay debits
+- NOT ELIGIBLE: International transactions
+
+Relationship to Standard UPI:
+UPI Lite is a sub-product of UPI, not a separate payment rail. The same VPA (Virtual Payment Address) and UPI app is used. The key distinction is that UPI Lite funds are held in an on-device wallet pre-loaded from the bank account, whereas standard UPI debits the bank account directly for each transaction. Both settle through the NPCI switch to the merchant's bank account in real time.
+
+Comparison with Other Channels for Sub-₹500 Amounts:
+- vs. UPI (standard): UPI Lite is faster (no PIN, no bank round-trip); prefer UPI Lite for ≤₹500
+- vs. NEFT: UPI Lite is real-time; NEFT is batch (30 min delay); UPI Lite preferred
+- vs. RTGS: RTGS minimum is ₹2,00,000 — not applicable for sub-₹500
+- vs. Cheque: Cheque is offline, slow, paper-based — UPI Lite preferred for all digital scenarios
+- vs. Net Banking: UPI Lite has no login friction; Net Banking requires browser session — UPI Lite preferred

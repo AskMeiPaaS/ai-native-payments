@@ -30,6 +30,17 @@ public class AccountController {
 
     public record TopupRequest(String userId, double amount, String method) {}
 
+    @GetMapping("/reveal-pii")
+    public ResponseEntity<Map<String, Object>> revealPii(
+            @RequestParam(required = false) String userId,
+            @RequestParam String field) {
+        if (!"email".equalsIgnoreCase(field) && !"phone".equalsIgnoreCase(field)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "field must be 'email' or 'phone'"));
+        }
+        String value = accountBalanceService.revealPii(userId, field.toLowerCase());
+        return ResponseEntity.ok(Map.of("value", value));
+    }
+
     @PostMapping("/topup")
     public ResponseEntity<Map<String, Object>> topUp(@RequestBody TopupRequest request) {
         if (request.amount() <= 0 || request.amount() > 10_00_000.00) {

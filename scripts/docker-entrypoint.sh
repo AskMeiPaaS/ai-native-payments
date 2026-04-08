@@ -6,6 +6,31 @@
 
 set -e
 
+read_magic() {
+  target_file="$1"
+  od -An -tx1 -N4 "$target_file" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'
+}
+
+is_valid_qe_library_for_os() {
+  target_file="$1"
+  os_name="$2"
+
+  [ -f "$target_file" ] || return 1
+  magic=$(read_magic "$target_file")
+
+  case "$os_name" in
+    Linux)
+      [ "$magic" = "7f454c46" ]
+      ;;
+    Darwin)
+      [ "$magic" = "cffaedfe" ] || [ "$magic" = "cefaedfe" ] || [ "$magic" = "feedfacf" ] || [ "$magic" = "feedface" ]
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 # Build Java Options with all environment variables
 JAVA_OPTS_ENV=""
 
@@ -53,27 +78,27 @@ if [ -n "$HTTP_REQUEST_TIMEOUT" ]; then
 fi
 
 # Queryable Encryption crypt shared library path
+# Default: look up the library that the Dockerfile downloaded
+OS_NAME="$(uname -s)"
 if [ -z "$MONGODB_QE_CRYPT_SHARED_LIB_PATH" ]; then
-  case "$(uname -s)" in
-    Linux)
-      [ -f /app/qe-native/mongo_crypt_v1.so ] && MONGODB_QE_CRYPT_SHARED_LIB_PATH=/app/qe-native/mongo_crypt_v1.so
-      ;;
-    Darwin)
-      [ -f /app/qe-native/mongo_crypt_v1.dylib ] && MONGODB_QE_CRYPT_SHARED_LIB_PATH=/app/qe-native/mongo_crypt_v1.dylib
-      ;;
-  esac
-
-  if [ -z "$MONGODB_QE_CRYPT_SHARED_LIB_PATH" ]; then
-    for candidate in /app/qe-native/mongo_crypt_v1.*; do
-      if [ -f "$candidate" ]; then
-        MONGODB_QE_CRYPT_SHARED_LIB_PATH="$candidate"
-        break
-      fi
-    done
+  # Prefer the path that the Dockerfile downloads (always Linux ELF)
+  if [ -f /app/qe-native/mongo_crypt_v1.so ]; then
+    MONGODB_QE_CRYPT_SHARED_LIB_PATH=/app/qe-native/mongo_crypt_v1.so
+  else
+    case "$OS_NAME" in
+      Darwin)
+        [ -f /app/qe-native/mongo_crypt_v1.dylib ] && MONGODB_QE_CRYPT_SHARED_LIB_PATH=/app/qe-native/mongo_crypt_v1.dylib
+        ;;
+    esac
   fi
 fi
 if [ -n "$MONGODB_QE_CRYPT_SHARED_LIB_PATH" ]; then
-  JAVA_OPTS_ENV="$JAVA_OPTS_ENV -DMONGODB_QE_CRYPT_SHARED_LIB_PATH=$MONGODB_QE_CRYPT_SHARED_LIB_PATH"
+  if is_valid_qe_library_for_os "$MONGODB_QE_CRYPT_SHARED_LIB_PATH" "$OS_NAME"; then
+    JAVA_OPTS_ENV="$JAVA_OPTS_ENV -DMONGODB_QE_CRYPT_SHARED_LIB_PATH=$MONGODB_QE_CRYPT_SHARED_LIB_PATH"
+  else
+    echo "[entrypoint] Ignoring QE library path due to incompatible binary format for $OS_NAME: $MONGODB_QE_CRYPT_SHARED_LIB_PATH"
+    unset MONGODB_QE_CRYPT_SHARED_LIB_PATH
+  fi
 fi
 
 # Execute Java application with all options

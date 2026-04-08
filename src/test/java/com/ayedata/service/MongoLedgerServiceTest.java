@@ -28,70 +28,70 @@ class MongoLedgerServiceTest {
     @Test
     void commitSwitchAtomic_withNullSessionId_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic(null, "userId", "merchantId", "bank", 100.0));
+            mongoLedgerService.commitSwitchAtomic(null, "userId", "merchantId", "bank", 100.0, null));
         assertEquals("sessionId is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withBlankSessionId_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("", "userId", "merchantId", "bank", 100.0));
+            mongoLedgerService.commitSwitchAtomic("", "userId", "merchantId", "bank", 100.0, null));
         assertEquals("sessionId is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withNullUserId_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", null, "merchantId", "bank", 100.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", null, "merchantId", "bank", 100.0, null));
         assertEquals("userId is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withBlankUserId_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "", "merchantId", "bank", 100.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "", "merchantId", "bank", 100.0, null));
         assertEquals("userId is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withNullMerchantId_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", null, "bank", 100.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", null, "bank", 100.0, null));
         assertEquals("beneficiary (name, account number, or merchant ID) is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withBlankMerchantId_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "", "bank", 100.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "", "bank", 100.0, null));
         assertEquals("beneficiary (name, account number, or merchant ID) is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withNullTargetBank_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", null, 100.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", null, 100.0, null));
         assertEquals("targetBank is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withBlankTargetBank_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "", 100.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "", 100.0, null));
         assertEquals("targetBank is required", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withZeroAmount_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", 0.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", 0.0, null));
         assertEquals("amount must be positive", exception.getMessage());
     }
 
     @Test
     void commitSwitchAtomic_withNegativeAmount_throwsException() {
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", -50.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", -50.0, null));
         assertEquals("amount must be positive", exception.getMessage());
     }
 
@@ -102,7 +102,7 @@ class MongoLedgerServiceTest {
                 .thenThrow(new IllegalArgumentException("insufficient balance: available ₹200.00"));
 
         IllegalArgumentException exception = assertThrows(IllegalArgumentException.class, () ->
-                mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", 500.0));
+                mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", 500.0, null));
 
         assertTrue(exception.getMessage().contains("insufficient balance"));
     }
@@ -113,7 +113,7 @@ class MongoLedgerServiceTest {
         when(accountBalanceService.debitBalance("userId", 100.0)).thenReturn(900.0);
 
         assertDoesNotThrow(() ->
-            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", 100.0));
+            mongoLedgerService.commitSwitchAtomic("sessionId", "userId", "merchantId", "bank", 100.0, null));
 
         ArgumentCaptor<TransactionRecord> transactionCaptor = ArgumentCaptor.forClass(TransactionRecord.class);
         verify(mongoTemplate).save(transactionCaptor.capture());

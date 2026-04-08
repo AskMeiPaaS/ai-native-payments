@@ -19,8 +19,7 @@ interface Message {
 }
 
 /** Canonical channel names the LLM or tool response may mention. */
-const CHANNELS = ['UPI LITE', 'UPI', 'NEFT', 'RTGS', 'IMPS', 'CHEQUE', 'CASH'] as const;
-type Channel = typeof CHANNELS[number];
+const CHANNELS = ['UPI LITE', 'UPI', 'NEFT', 'RTGS', 'IMPS', 'CHEQUE'] as const;
 
 /** Extract the payment channel the LLM chose from the completed agent reply. */
 function extractChannel(text: string): string | undefined {
@@ -63,6 +62,14 @@ interface AccountTransferSummary {
   status: string;
   createdAt?: string;
   resultingBalance?: number;
+  channel?: string;
+}
+
+interface TokenStats {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  elapsedMs: number;
 }
 
 interface AccountSummary {
@@ -75,6 +82,8 @@ interface AccountSummary {
   currency: string;
   lastTransferAmount: number;
   lastTransferStatus: string;
+  lastPaymentMethod?: string;
+  lastTransactionType?: string;
   recentTransfers?: AccountTransferSummary[];
 }
 
@@ -102,6 +111,7 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
   const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [isAccountLoading, setIsAccountLoading] = useState(true);
+  const [lastTokenStats, setLastTokenStats] = useState<TokenStats | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Resolve effective userId for API calls
@@ -145,9 +155,15 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
       const data: AccountSummary = await response.json();
       setAccountError(null);
       setAccountSummary((prev) => {
-        if (notifyOnBalanceChange && prev && data.currentBalance < prev.currentBalance) {
-          const deductedAmount = (prev.currentBalance - data.currentBalance).toFixed(2);
-          appendActivity('Balance updated', `₹${deductedAmount} deducted after successful transfer.`, 'success');
+        if (notifyOnBalanceChange && prev) {
+          if (data.currentBalance < prev.currentBalance) {
+            const deductedAmount = (prev.currentBalance - data.currentBalance).toFixed(2);
+            appendActivity('Balance updated', `₹${deductedAmount} deducted after successful transfer.`, 'success');
+          } else if (data.currentBalance > prev.currentBalance) {
+            const creditedAmount = (data.currentBalance - prev.currentBalance).toFixed(2);
+            const method = data.lastPaymentMethod && data.lastPaymentMethod !== '—' ? ` via ${data.lastPaymentMethod}` : '';
+            appendActivity('Balance updated', `₹${creditedAmount} credited to your account${method}.`, 'success');
+          }
         }
         return data;
       });
@@ -175,11 +191,36 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
     }
   }, []);
 
-  // Initialize session on mount
+  // Load chat history from backend for the given session
+  const loadChatHistory = useCallback(async (sid: string) => {
+    try {
+      const response = await fetch(`/api/v1/agent/chat-history?sessionId=${encodeURIComponent(sid)}`);
+      if (!response.ok) return;
+      const data = await response.json();
+      const history: { role: string; content: string }[] = data.messages || [];
+      if (history.length > 0) {
+        const restored: Message[] = history.map((msg, idx) => ({
+          id: `hist-${idx}-${Date.now()}`,
+          role: msg.role as 'user' | 'agent',
+          content: msg.content,
+          timestamp: new Date(),
+          status: 'sent' as const,
+        }));
+        setMessages(restored);
+      }
+    } catch (e) {
+      console.warn('Failed to load chat history:', e);
+    }
+  }, []);
+
+  // Initialize session on mount — deterministic per user so chat persists
   useEffect(() => {
-    const newSessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    setSessionId(newSessionId);
-    resetActivityLog('Session ready', 'New chat session initialized.', 'info');
+    const userSessionId = `session-${effectiveUserId}`;
+    setSessionId(userSessionId);
+    resetActivityLog('Session ready', 'Chat session loaded.', 'info');
+
+    // Load previous chat history for this user
+    void loadChatHistory(userSessionId);
 
     // Check health immediately
     checkHealth();
@@ -188,7 +229,7 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
     // Check health every 10 seconds
     const healthInterval = setInterval(checkHealth, 10000);
     return () => clearInterval(healthInterval);
-  }, [checkHealth, refreshAccountSummary, resetActivityLog]);
+  }, [checkHealth, effectiveUserId, loadChatHistory, refreshAccountSummary, resetActivityLog]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -250,6 +291,7 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
           },
           body: JSON.stringify({
             sessionId,
+            userId: effectiveUserId,
             userIntent: userMessage,
             timestamp: new Date().toISOString(),
           }),
@@ -400,6 +442,14 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
                       : (jsonData.message || `Completed in ${elapsedSecs}s`),
                     'success'
                   );
+                  if (jsonData.outputTokens !== undefined) {
+                    setLastTokenStats({
+                      inputTokens:  jsonData.inputTokens  ?? 0,
+                      outputTokens: jsonData.outputTokens ?? 0,
+                      totalTokens:  jsonData.totalTokens  ?? 0,
+                      elapsedMs:    jsonData.elapsedMs,
+                    });
+                  }
                   setMessages((prev) =>
                     prev.map((msg) =>
                       msg.id === agentMessageId
@@ -460,8 +510,21 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
         setIsLoading(false);
       }
     },
-    [appendActivity, refreshAccountSummary, resetActivityLog, sessionId]
+    [appendActivity, effectiveUserId, refreshAccountSummary, resetActivityLog, sessionId]
   );
+
+  const handleNewChat = useCallback(async () => {
+    // Clear server-side chat memory for this session
+    try {
+      await fetch(`/api/v1/agent/chat-history?sessionId=${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+      });
+    } catch (e) {
+      console.warn('Failed to clear chat history on server:', e);
+    }
+    setMessages([]);
+    resetActivityLog('New chat', 'Chat history cleared. Start a new conversation.', 'info');
+  }, [sessionId, resetActivityLog]);
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], {
@@ -476,6 +539,9 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
         sessionId={sessionId}
         messageCount={messages.filter((m) => m.role === 'user').length}
         activityLogs={activityLogs}
+        backendConnected={mongoConnected}
+        onNewChat={handleNewChat}
+        lastTokenStats={lastTokenStats}
       />
 
       <div className="chat-main">
@@ -551,16 +617,20 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
                     className={`message-group message-group--${msg.role}`}
                   >
                     <div className={`message-bubble message-bubble--${msg.role}`}>
-                      <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-                      {msg.role === 'agent' && msg.channel && (
-                        <div className="channel-badge" data-ch={msg.channel}>
-                          <span className="channel-badge__dot" />
-                          <span className="channel-badge__label">{msg.channel}</span>
-                          <span className="channel-badge__suffix">via RAG+LLM</span>
+                      <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'break-word' }}>{msg.content}</div>
+                      {msg.role === 'agent' && (msg.channel || msg.meta) && (
+                        <div className="bubble-footer">
+                          {msg.channel && (
+                            <div className="channel-badge" data-ch={msg.channel}>
+                              <span className="channel-badge__dot" />
+                              <span className="channel-badge__label">{msg.channel}</span>
+                              <span className="channel-badge__suffix">via RAG+LLM</span>
+                            </div>
+                          )}
+                          {msg.meta && (
+                            <div className="message-meta">{msg.meta}</div>
+                          )}
                         </div>
-                      )}
-                      {msg.role === 'agent' && msg.meta && (
-                        <div className="message-meta">{msg.meta}</div>
                       )}
                       {msg.role === 'agent' && msg.content && !msg.content.startsWith('⏳') && (
                         <HitlAppealButton sessionId={sessionId} />

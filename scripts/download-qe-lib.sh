@@ -1,14 +1,45 @@
 #!/bin/sh
+# ============================================================================
+# Download MongoDB crypt_shared library for Queryable Encryption.
+#
+# Auto-detects platform (Linux/macOS, x86_64/aarch64) when no explicit URL is
+# provided.  Downloads into lib/qe-native/ so the Dockerfile can COPY it in.
+#
+# Override with:
+#   MONGODB_QE_CRYPT_SHARED_LIB_URL  – full URL to the .tgz / .so / .dylib
+#   MONGO_CRYPT_VERSION               – e.g. 8.0.9 (default)
+#   QE_LIB_TARGET_DIR                 – output directory (default: lib/qe-native)
+# ============================================================================
 
 set -eu
 
-TARGET_DIR="src/main/resources/qe-native"
+MONGO_CRYPT_VERSION="${MONGO_CRYPT_VERSION:-8.0.9}"
+TARGET_DIR="${QE_LIB_TARGET_DIR:-lib/qe-native}"
 DOWNLOAD_URL="${MONGODB_QE_CRYPT_SHARED_LIB_URL:-${QE_IT_CRYPT_SHARED_LIB_URL:-}}"
 DOWNLOAD_SHA256="${MONGODB_QE_CRYPT_SHARED_LIB_SHA256:-${QE_IT_CRYPT_SHARED_LIB_SHA256:-}}"
 
+# ── Auto-detect platform ────────────────────────────────────────────────
 if [ -z "$DOWNLOAD_URL" ]; then
-  echo "[download-qe-lib] Set MONGODB_QE_CRYPT_SHARED_LIB_URL (or QE_IT_CRYPT_SHARED_LIB_URL)"
-  exit 1
+  OS="$(uname -s)"
+  ARCH="$(uname -m)"
+
+  case "$OS" in
+    Linux)
+      case "$ARCH" in
+        x86_64)  MONGO_ARCH="x86_64"  ;;
+        aarch64) MONGO_ARCH="aarch64" ;;
+        *)       echo "[download-qe-lib] Unsupported Linux arch: $ARCH"; exit 1 ;;
+      esac
+      DOWNLOAD_URL="https://downloads.mongodb.com/linux/mongo_crypt_shared_v1-linux-${MONGO_ARCH}-enterprise-ubuntu2204-${MONGO_CRYPT_VERSION}.tgz"
+      ;;
+    Darwin)
+      DOWNLOAD_URL="https://downloads.mongodb.com/osx/mongo_crypt_shared_v1-macos-arm64-enterprise-${MONGO_CRYPT_VERSION}.tgz"
+      ;;
+    *)
+      echo "[download-qe-lib] Unsupported OS: $OS.  Set MONGODB_QE_CRYPT_SHARED_LIB_URL manually."
+      exit 1
+      ;;
+  esac
 fi
 
 TMP_DIR=$(mktemp -d)
@@ -18,6 +49,13 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$TARGET_DIR"
+
+# Skip download if we already have the library
+EXISTING=$(find "$TARGET_DIR" -maxdepth 1 -name 'mongo_crypt_v1.*' -type f 2>/dev/null | head -n 1)
+if [ -n "${EXISTING:-}" ]; then
+  echo "[download-qe-lib] Library already present: $EXISTING  (delete to re-download)"
+  exit 0
+fi
 
 ARTIFACT_PATH="$TMP_DIR/crypt-shared-artifact"
 echo "[download-qe-lib] Downloading: $DOWNLOAD_URL"

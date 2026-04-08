@@ -15,12 +15,23 @@ interface SidebarProps {
   sessionId?: string;
   messageCount?: number;
   activityLogs?: ActivityLog[];
+  backendConnected?: boolean;
+  onNewChat?: () => void;
+  lastTokenStats?: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    elapsedMs: number;
+  } | null;
 }
 
 export default function Sidebar({
   sessionId = 'N/A',
   messageCount = 0,
   activityLogs = [],
+  backendConnected = true,
+  onNewChat,
+  lastTokenStats,
 }: SidebarProps) {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window === 'undefined') {
@@ -92,6 +103,21 @@ export default function Sidebar({
         </div>
       </div>
 
+      {/* New Chat */}
+      {onNewChat && (
+        <div className="sidebar-section">
+          <button
+            className="theme-btn"
+            onClick={onNewChat}
+            title="Clear chat history and start a new conversation"
+            aria-label="New chat"
+          >
+            <span>🗑️</span>
+            <span>New Chat</span>
+          </button>
+        </div>
+      )}
+
       {/* Activity */}
       <div className="sidebar-section">
         <div className="sidebar-label">Latest Activity</div>
@@ -119,6 +145,35 @@ export default function Sidebar({
           <span className="stat-label">Messages sent</span>
           <span className="stat-value">{messageCount}</span>
         </div>
+
+        {/* Token usage from last request */}
+        <div className="sidebar-label" style={{ marginTop: 'var(--space-3)' }}>Last Request Tokens</div>
+        {lastTokenStats ? (
+          <div className="token-stats-grid">
+            <div className="token-stat">
+              <span className="token-stat__label">In</span>
+              <span className="token-stat__value">{lastTokenStats.inputTokens}</span>
+            </div>
+            <div className="token-stat">
+              <span className="token-stat__label">Out</span>
+              <span className="token-stat__value">{lastTokenStats.outputTokens}</span>
+            </div>
+            <div className="token-stat">
+              <span className="token-stat__label">Total</span>
+              <span className="token-stat__value">{lastTokenStats.totalTokens || lastTokenStats.inputTokens + lastTokenStats.outputTokens}</span>
+            </div>
+            <div className="token-stat">
+              <span className="token-stat__label">t/s</span>
+              <span className="token-stat__value token-stat__value--accent">
+                {lastTokenStats.elapsedMs > 0
+                  ? (lastTokenStats.outputTokens / (lastTokenStats.elapsedMs / 1000)).toFixed(1)
+                  : '—'}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="token-stats-empty">Send a message to see metrics.</div>
+        )}
       </div>
 
       {/* Backend */}
@@ -126,7 +181,7 @@ export default function Sidebar({
         <div className="sidebar-label">Backend</div>
         <div className="backend-pill">
           <div className="pulse-dot" />
-          <span>PaSS Online</span>
+          <span>{backendConnected ? 'PaSS Online' : 'PaSS Offline'}</span>
         </div>
       </div>
 

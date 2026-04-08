@@ -40,7 +40,7 @@ public class AiConfig {
     @Value("${app.ai.llm.temperature}")
     private Double llmTemperature;
 
-    @Value("${app.ai.llm.timeout-seconds:600}")
+    @Value("${app.ai.llm.timeout-seconds:900}")
     private Integer llmTimeoutSeconds;
 
     @PostConstruct

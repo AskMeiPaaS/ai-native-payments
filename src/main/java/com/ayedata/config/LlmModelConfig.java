@@ -26,7 +26,7 @@ public class LlmModelConfig {
     @Value("${app.ai.llm.temperature}")
     private Double llmTemperature;
 
-    @Value("${app.ai.llm.timeout-seconds:600}")
+    @Value("${app.ai.llm.timeout-seconds:900}")
     private Integer llmTimeoutSeconds;
 
     @Value("${app.ai.llm.num-ctx:4096}")

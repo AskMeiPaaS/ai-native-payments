@@ -4,6 +4,7 @@
     "displayName": "Arjun Kumar",
     "email": "arjun.kumar@example.com",
     "phone": "+91-98765-43210",
+    "accountNumber": "1001-2001-3001",
     "openingBalance": 50000.0
   },
   {
@@ -11,20 +12,23 @@
     "displayName": "Priya Sharma",
     "email": "priya.sharma@example.com",
     "phone": "+91-87654-32109",
-    "openingBalance": 75000.0
+    "accountNumber": "1002-2002-3002",
+    "openingBalance": 575000.0
   },
   {
     "userId": "user003",
     "displayName": "Rahul Patel",
     "email": "rahul.patel@example.com",
     "phone": "+91-76543-21098",
-    "openingBalance": 30000.0
+    "accountNumber": "1003-2003-3003",
+    "openingBalance": 230000.0
   },
   {
     "userId": "user004",
     "displayName": "Kavya Singh",
     "email": "kavya.singh@example.com",
     "phone": "+91-65432-10987",
+    "accountNumber": "1004-2004-3004",
     "openingBalance": 100000.0
   },
   {
@@ -32,6 +36,7 @@
     "displayName": "Amit Verma",
     "email": "amit.verma@example.com",
     "phone": "+91-54321-09876",
+    "accountNumber": "1005-2005-3005",
     "openingBalance": 25000.0
   }
 ]

@@ -49,7 +49,7 @@ setup: ## First-time setup (install dependencies)
 # DOCKER COMPOSE COMMANDS
 # ============================================================================
 
-up: ## Start all services with Docker Compose
+up: qe-download-lib ## Start all services with Docker Compose
 	@echo "$(BLUE)Starting all services...$(NC)"
 	$(DOCKER_COMPOSE) up --build -d
 	@echo "$(GREEN)✓ Services started$(NC)"
@@ -127,7 +127,7 @@ frontend: ## Build Next.js frontend
 	cd agent-ui && $(NODE) run build
 	@echo "$(GREEN)✓ Frontend built successfully$(NC)"
 
-docker-build: ## Build Docker images (without starting)
+docker-build: qe-download-lib ## Build Docker images (without starting)
 	@echo "$(BLUE)Building Docker images...$(NC)"
 	$(DOCKER_COMPOSE) build --no-cache
 	@echo "$(GREEN)✓ Docker images built$(NC)"
@@ -201,10 +201,10 @@ update-deps: ## Update dependencies to latest versions
 	$(MAVEN) -f pom.xml versions:use-latest-versions
 	@echo "$(GREEN)✓ Dependencies updated$(NC)"
 
-qe-download-lib: ## Download mongo_crypt_v1 library into src/main/resources/qe-native
+qe-download-lib: ## Download mongo_crypt_v1 library into lib/qe-native (auto-detects platform)
 	@echo "$(BLUE)Downloading QE crypt shared library...$(NC)"
 	sh scripts/download-qe-lib.sh
-	@echo "$(GREEN)✓ QE library installed into src/main/resources/qe-native$(NC)"
+	@echo "$(GREEN)✓ QE library installed into lib/qe-native$(NC)"
 
 # ============================================================================
 # DATABASE COMMANDS

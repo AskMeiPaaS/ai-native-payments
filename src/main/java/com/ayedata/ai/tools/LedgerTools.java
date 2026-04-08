@@ -6,6 +6,8 @@ import com.ayedata.payment.PaymentResult;
 import com.ayedata.payment.PaymentSwitchRouter;
 import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.FraudContextService;
+import com.ayedata.service.MongoLedgerService;
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
 import org.slf4j.Logger;
@@ -27,11 +29,14 @@ public class LedgerTools {
 
     private final FraudContextService fraudContextService;
     private final PaymentSwitchRouter paymentSwitchRouter;
+    private final MongoLedgerService mongoLedgerService;
 
     public LedgerTools(FraudContextService fraudContextService,
-                       PaymentSwitchRouter paymentSwitchRouter) {
+                       PaymentSwitchRouter paymentSwitchRouter,
+                       MongoLedgerService mongoLedgerService) {
         this.fraudContextService = fraudContextService;
         this.paymentSwitchRouter = paymentSwitchRouter;
+        this.mongoLedgerService = mongoLedgerService;
     }
 
     /** Register a session → userId mapping before orchestration starts. */
@@ -68,7 +73,10 @@ public class LedgerTools {
             do NOT ask the user; just inform them of the correction you made. \
             It rejects overdrafts and never allows a negative balance.\
             """)
-    public String transferFunds(@ToolMemoryId String memoryId, String beneficiary, String targetBank, double amount) {
+    public String transferFunds(@ToolMemoryId String memoryId,
+                               @P("Beneficiary: person name, UPI ID, account number, or merchant ID") String beneficiary,
+                               @P(value = "Payment channel (UPI Lite / UPI / NEFT / RTGS). Omit to auto-select.", required = false) String targetBank,
+                               @P("Transfer amount in INR, must be positive") double amount) {
         String userId = resolveUserId(memoryId);
 
         // Auto-select the optimal channel when not explicitly provided
@@ -124,7 +132,9 @@ public class LedgerTools {
             'I got paid ₹X', or 'add balance'. \
             Never call this for outbound transfers — use transferFunds for those.\
             """)
-    public String receiveFunds(@ToolMemoryId String memoryId, double amount, String channel) {
+    public String receiveFunds(@ToolMemoryId String memoryId,
+                              @P("Amount to credit in INR, must be positive") double amount,
+                              @P(value = "Payment channel (UPI Lite / UPI / NEFT / RTGS). Omit to auto-select.", required = false) String channel) {
         if (amount <= 0) {
             return "RECEIVE_BLOCKED: Amount must be positive.";
         }
@@ -219,9 +229,18 @@ public class LedgerTools {
     }
 
     @Tool("Registers a bank mandate or routing switch request without moving money. Use this only when no transfer amount is involved.")
-    public String switchMandate(@ToolMemoryId String memoryId, String bankName, String mandateDetails) {
-        log.info("Mandate switch tool invoked for session {}: {}", memoryId, bankName);
+    public String switchMandate(@ToolMemoryId String memoryId,
+                               @P("Bank name or mandate target (e.g. 'HDFC Bank', 'SBI')") String bankName,
+                               @P("Mandate details or routing instructions as provided by the user") String mandateDetails) {
+        String userId = resolveUserId(memoryId);
+        log.info("Mandate switch tool invoked for session {} user {}: {}", memoryId, userId, bankName);
         fraudContextService.evaluateTelemetryContext("{}", "Switch mandate to " + bankName);
-        return "SUCCESS: Mandate switch initiated securely for " + bankName + ". Details: " + mandateDetails;
+        try {
+            String txnId = mongoLedgerService.commitMandateAtomic(memoryId, userId, bankName, mandateDetails);
+            return "SUCCESS: Mandate switch initiated securely for " + bankName + ". Reference: " + txnId + ". Details: " + mandateDetails;
+        } catch (IllegalArgumentException ex) {
+            log.warn("Mandate switch blocked: {}", ex.getMessage());
+            return "MANDATE_BLOCKED: " + ex.getMessage();
+        }
     }
 }

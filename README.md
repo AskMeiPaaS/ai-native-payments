@@ -29,7 +29,7 @@ Traditional payment apps wrap AI around a fixed rule engine. Here the inverse is
 | **Channel selection** | Only channels found in the retrieved knowledge chunks are offered to the LLM (`[APPROVED CHANNELS]`). |
 | **Channel validation** | `LedgerTools.validateChannelForAmount()` cross-checks the LLM's chosen channel against RBI amount rules at tool-call time. On mismatch it returns a `CHANNEL_MISMATCH:` sentinel with the correct channel so the LLM automatically re-invokes with the corrected value. |
 | **Fraud context** | `FraudContextService` scores behavioural telemetry; score influences the HITL threshold, not routing. |
-| **Ledger execution** | `@Tool`-annotated Java methods expose ACID-safe operations the LLM can call by name. |
+| **Ledger execution** | `@Tool`-annotated Java methods expose ACID-safe operations the LLM can call by name. All three tools (`transferFunds`, `receiveFunds`, `switchMandate`) commit to MongoDB via `MongoLedgerService`. |
 | **Memory** | Temporal turns are vector-embedded and recalled per session. RAG knowledge is reranked per query. |
 | **Human oversight** | Any decision can be appealed; operators approve / deny / override via the HITL dashboard. |
 | **Token performance** | `OllamaMetricsScheduler` passively records real `TokenUsage` from every completed request. The SSE `complete` event carries `inputTokens`, `outputTokens`, `totalTokens`, and `elapsedMs`; the `Sidebar` component renders a live token/s panel. |
@@ -47,7 +47,7 @@ Traditional payment apps wrap AI around a fixed rule engine. Here the inverse is
 | Memory store | MongoDB Local Atlas | Four isolated databases (main, audit, hitl, memory) with vector search |
 | Embeddings | Voyage AI `voyage-4` (API) | 1024-dim dense embeddings for RAG and temporal recall |
 | Reranking | Voyage AI `rerank-lite-1` (API) | Relevance scoring on retrieved knowledge chunks |
-| LLM | Ollama + Qwen 2.5 latest (local) | Real-time token streaming; configurable via `LLM_MODEL_NAME` |
+| LLM | Ollama + Qwen 2.5 3B (local) | Real-time token streaming; configurable via `LLM_MODEL_NAME`; context window `LLM_NUM_CTX=8192` |
 | Containers | Docker Compose | Four-service stack; all secrets injected via `.env` |
 
 ---
@@ -297,9 +297,11 @@ docker logs -f ollama   # watch until model is ready
 ### 3. Verify
 
 ```bash
-curl http://localhost:8080/actuator/health   # {"status":"UP"}
-curl http://localhost:11434/api/tags         # lists loaded model
+curl http://localhost:8080/api/v1/agent/health   # {"status":"UP","toolsAvailable":true,...}
+curl http://localhost:11434/api/tags             # lists loaded model
 ```
+
+> `toolsAvailable: true` confirms all three `@Tool` methods (`transferFunds`, `receiveFunds`, `switchMandate`) are wired and ready.
 
 Open **http://localhost:3000** — the chat UI is ready.
 
@@ -336,7 +338,7 @@ mvn -q package -DskipTests \
 | `POST` | `/api/v1/operator/escalations/{id}/approve` | Operator: approve |
 | `POST` | `/api/v1/operator/escalations/{id}/deny` | Operator: deny |
 | `POST` | `/api/v1/operator/escalations/{id}/override` | Operator: manual override |
-| `GET` | `/actuator/health` | Health check |
+| `GET` | `/api/v1/agent/health` | Health check — returns `status`, `backend`, `toolsAvailable` |
 
 ---
 
@@ -351,6 +353,7 @@ All secrets live in `.env` (git-ignored). See `.env.example` for the full list w
 | `MONGODB_INITDB_ROOT_USERNAME` / `_PASSWORD` | MongoDB credentials |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated frontend origins |
 | `LLM_TIMEOUT_SECONDS` | LLM inference timeout — set high on slow hardware (default: `900`) |
+| `LLM_NUM_CTX` | Ollama context window in tokens (default: `8192`; increase to `16384` for complex multi-turn sessions) |
 | `MONGODB_QE_CRYPT_SHARED_LIB_PATH` | Optional path to `mongo_crypt_v1` shared library for Queryable Encryption |
 | `QE_IT_CRYPT_SHARED_LIB_PATH` | Build/test helper: source library file to bundle into `target/qe-native` |
 | `QE_IT_CRYPT_SHARED_LIB_URL` | Build helper: download URL for `mongo_crypt_v1` archive or binary |
@@ -399,8 +402,8 @@ This installs the binary under `src/main/resources/qe-native/mongo_crypt_v1.so`.
 | Symptom | Fix |
 |---------|-----|
 | `api-gateway` unhealthy | `docker logs api-gateway` — usually a missing `VOYAGE_API_KEY` |
-| `Error in input stream` | Ollama took > Node.js request timeout — already fixed with heartbeat + `--request-timeout=0` |
-| Slow inference | `qwen2.5:latest` is fastest for CPU-only; set `LLM_MODEL_NAME=qwen2.5:latest` in `.env` |
+| `Error in input stream` | Ollama took > Node.js request timeout — the Next.js proxy uses `--request-timeout=0` and the backend sends SSE heartbeats every 15 s to keep the connection alive |
+| Slow inference | `qwen2.5:3b` is fastest for CPU-only; set `LLM_MODEL_NAME=qwen2.5:3b` in `.env` |
 | MongoDB fails | Check `MONGODB_INITDB_ROOT_USERNAME` / `_PASSWORD` match across all URIs in `.env` |
 | Ollama stuck on pull | `docker logs -f ollama`; first pull is 1-2 GB |
 | Channel badge missing | Means RAG returned no channel-specific docs for that query — check `VOYAGE_API_KEY` is set |
@@ -422,10 +425,10 @@ This installs the binary under `src/main/resources/qe-native/mongo_crypt_v1.so`.
 
 ## Contributing
 
-1. Add new banking operations as `@Tool` methods in `LedgerTools.java`
-2. Extend the RAG corpus by adding `.txt` files to `src/main/resources/rag/` and re-seeding
-3. Add new payment channels to `CHANNEL_SYNONYMS` in `ContextEnricher.java`
-4. Implement Spring Security for production authentication
+1. Add new banking operations as `@Tool` methods in `LedgerTools.java`; add a matching `commit*Atomic` method in `MongoLedgerService.java` so every tool invocation is persisted to the ledger.
+2. Extend the RAG corpus by adding `.txt` files to `src/main/resources/rag/` and registering the document ID in `RagKnowledgeSeeder.java`.
+3. Add new payment channels: implement `PaymentSwitch`, register aliases in `PaymentSwitchRouter`, add the canonical name to `CHANNEL_SYNONYMS` in `ContextEnricher.java`.
+4. Implement Spring Security for production authentication.
 
 ---
 

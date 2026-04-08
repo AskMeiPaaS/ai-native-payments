@@ -163,4 +163,46 @@ public class MongoLedgerService {
         log.info("Receive committed: {} ₹{} via {} to user {} (balance ₹{})", txnId, amount, channel, resolvedUserId, newBalance);
         return txnId;
     }
+
+    /**
+     * Persists a mandate-switch instruction to the ledger (no money movement).
+     * Used by the {@code switchMandate} tool so every agent-triggered mandate action is audited.
+     */
+    @Transactional
+    public String commitMandateAtomic(String sessionId, String userId, String bankName, String mandateDetails) {
+        if (sessionId == null || sessionId.isBlank()) throw new IllegalArgumentException("sessionId is required");
+        if (userId == null || userId.isBlank()) throw new IllegalArgumentException("userId is required");
+        if (bankName == null || bankName.isBlank()) throw new IllegalArgumentException("bankName is required");
+
+        String resolvedUserId = accountBalanceService.normalizeUserId(userId);
+        double currentBalance = accountBalanceService.getCurrentBalance(resolvedUserId);
+        String txnId = "TXN-PASS-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+
+        TransactionRecord record = TransactionRecord.builder()
+                .id(txnId)
+                .sessionId(sessionId)
+                .userId(resolvedUserId)
+                .instructionType("PASS_MANDATE_SWITCH")
+                .status("SETTLED")
+                .createdAt(Instant.now())
+                .resultingBalance(currentBalance)
+                .paymentMethod(bankName)
+                .requiresHitlReview(false)
+                .financialData(FinancialData.builder()
+                        .amount(0.0)
+                        .merchantId(bankName)
+                        .recipientBank(bankName)
+                        .donor_account(resolvedUserId)
+                        .recipient_account(bankName)
+                        .build())
+                .agentReasoningSnapshot(AgentReasoning.builder()
+                        .supervisorDecision("MANDATE_SWITCH_APPROVED")
+                        .contextSimilarityScore(0.0)
+                        .build())
+                .build();
+
+        mongoTemplate.save(record);
+        log.info("Mandate switch committed: {} for user {} → bank {}", txnId, resolvedUserId, bankName);
+        return txnId;
+    }
 }

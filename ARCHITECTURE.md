@@ -72,12 +72,22 @@ Instead of a standard Java Controller dictating steps, the Supervisor Agent acts
 @Component
 public class PaSSOrchestratorAgent {
     @PostConstruct
-    void createSupervisor() {
-        // Create singleton supervisor (fixed 99% memory leak from per-request creation)
-        supervisor = AiServices.builder()
-            .chatLanguageModel(chatModel)
-            .tools(this)
-            .systemMessage("You are the PaSS orchestrator...")
+    public void init() {
+        // Synchronous supervisor — used by /orchestrate
+        supervisor = AiServices.builder(Supervisor.class)
+            .chatModel(chatLanguageModel)
+            .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
+                .id(memId).maxMessages(6).chatMemoryStore(chatMemoryStore).build())
+            .tools(ledgerTools)   // @Tool methods: transferFunds, receiveFunds, switchMandate
+            .build();
+        toolsAvailable = true;
+
+        // Streaming supervisor — used by /orchestrate-stream
+        streamingSupervisor = AiServices.builder(StreamingSupervisor.class)
+            .streamingChatModel(streamingChatModel)
+            .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
+                .id(memId).maxMessages(6).chatMemoryStore(chatMemoryStore).build())
+            .tools(ledgerTools)
             .build();
     }
 }
@@ -88,16 +98,44 @@ public class PaSSOrchestratorAgent {
 LangChain4j bridges creative LLM reasoning with deterministic banking operations:
 
 - `@Tool` annotations expose secure Java methods to the LLM
-- LLM identifies intent and calls the Java tool (doesn't guess)
+- `@P` annotations describe each parameter so the LLM fills them correctly
+- `@ToolMemoryId` injects the session ID for per-session userId resolution without exposing it to the LLM
+- LLM identifies intent and calls the Java tool — it does not guess values or execute ledger writes itself
 - ACID transactions ensure consistency
 
 ```java
 @Component
-public class PaSSExecutionTools {
-    @Tool("Execute mandate switch only after Context Agent confirms vector similarity > 0.95")
-    public String executePaSSSwitch(String sessionId, String merchantId, String targetBank) {
-        // Strict, deterministic ACID execution
-        return mongoService.commitSwitchAtomic(sessionId, merchantId, targetBank);
+public class LedgerTools {
+
+    @Tool("""
+        Transfers money securely to a beneficiary. The channel parameter is optional —
+        if not provided, the tool auto-selects the optimal channel for the amount.
+        On CHANNEL_MISMATCH: automatically re-call with the suggested channel.
+        """)
+    public String transferFunds(
+            @ToolMemoryId String memoryId,
+            @P("Beneficiary: person name, UPI ID, account number, or merchant ID") String beneficiary,
+            @P(value = "Payment channel (UPI Lite / UPI / NEFT / RTGS). Omit to auto-select.",
+               required = false) String targetBank,
+            @P("Transfer amount in INR, must be positive") double amount) {
+        // auto-select or validate channel, route via PaymentSwitchRouter
+        // ACID debit via MongoLedgerService.commitSwitchAtomic()
+    }
+
+    @Tool("Credits money into the user's account for receives, top-ups, and deposits.")
+    public String receiveFunds(
+            @ToolMemoryId String memoryId,
+            @P("Amount to credit in INR, must be positive") double amount,
+            @P(value = "Payment channel. Omit to auto-select.", required = false) String channel) {
+        // ACID credit via MongoLedgerService.commitReceiveAtomic()
+    }
+
+    @Tool("Registers a bank mandate switch without moving money.")
+    public String switchMandate(
+            @ToolMemoryId String memoryId,
+            @P("Bank name or mandate target") String bankName,
+            @P("Mandate details as provided by the user") String mandateDetails) {
+        // Persists PASS_MANDATE_SWITCH via MongoLedgerService.commitMandateAtomic()
     }
 }
 ```
@@ -107,21 +145,9 @@ public class PaSSExecutionTools {
 To prevent uncertain LLM actions, the system enforces confidence tagging:
 
 - LLM responses must include `[Confidence: HIGH/MEDIUM/LOW]` tags
-- LOW confidence triggers clarification questions instead of tool calls
-- System prompt rules 13-15 guide confidence evaluation based on input clarity and context availability
-
-```java
-// In PaSSOrchestratorAgent.java
-private static final String SYSTEM_PROMPT = """
-You are the PaSS orchestrator...
-
-13. Assess confidence in your understanding: HIGH if clear intent and sufficient context, MEDIUM if some ambiguity but reasonable inference possible, LOW if unclear or missing critical information.
-
-14. Always include [Confidence: HIGH/MEDIUM/LOW] in your response.
-
-15. If LOW confidence, ask specific clarification questions instead of calling tools.
-""";
-```
+- `HIGH` / `MEDIUM`: tool is called immediately
+- `LOW`: missing details trigger one focused clarification question; no tool call is made
+- Rules 13–15 in `SYSTEM_PROMPT` of `PaSSOrchestratorAgent.java` define this behaviour
 
 #### D. Semantic Memory Integration
 
@@ -145,7 +171,7 @@ LangChain4j manages the platform's "brain":
            │
     ┌──────▼────────────┐
     │      Ollama       │
-    │    qwen2.5:latest │
+    │    qwen2.5:3b     │
     │      11434        │
     └───────────────────┘
            │
@@ -235,10 +261,9 @@ RERANKER_MODEL_NAME=rerank-lite-1   # Lightweight reranker
 
 # Local LLM (Ollama)
 LLM_BASE_URL=http://ollama:11434
-LLM_MODEL_NAME=qwen2.5:latest
+LLM_MODEL_NAME=qwen2.5:3b
 LLM_TIMEOUT_SECONDS=900
-LLM_NUM_CTX=4096
-LLM_NUM_PREDICT=1024
+LLM_NUM_CTX=8192
 
 # Retrieval controls
 RERANKER_TOP_K=2
@@ -304,7 +329,7 @@ sequenceDiagram
     end
     
     rect rgb(235, 250, 235)
-        Ledger->>Tool: executePaSSSwitch(sessionId, 'MERCH_BESCOM_01', 'ICICI')
+        Ledger->>Tool: switchMandate(sessionId, 'ICICI', 'BESCOM bill mandate')
         Tool->>Memory: Multi-doc ACID transaction
         Memory-->>Tool: Success
     end
@@ -516,14 +541,14 @@ These rules are enforced in Java code and inform the LLM via RAG. The LLM operat
 
 ### 5.2 Payment Channel Routing
 
-The LLM selects a channel from the RAG-approved list. `LedgerTools.pickBestChannel()` provides a programmatic fallback if the LLM omits the channel.
+The LLM selects a channel from the RAG-approved list. When the LLM omits the channel, `LedgerTools.selectChannelForAmount()` auto-selects the optimal channel before routing.
 
 | Amount Range | Auto-selected Channel | RAG Source |
 |---|---|---|
 | ≤ ₹500 | UPI Lite | `payment-routing-risk-matrix.txt` |
 | ₹501 – ₹1,00,000 | UPI | `payment-routing-risk-matrix.txt` |
-| ₹1,00,001 – ₹5,00,000 | NEFT | `payment-routing-risk-matrix.txt` |
-| > ₹5,00,000 | RTGS | `payment-routing-risk-matrix.txt` |
+| ₹1,00,001 – ₹1,99,999 | NEFT | `payment-routing-risk-matrix.txt` |
+| ≥ ₹2,00,000 | RTGS | `payment-routing-risk-matrix.txt` |
 
 > The user's explicitly named channel always overrides the auto-selection. The backend persists the LLM-chosen channel without re-routing.
 
@@ -532,11 +557,11 @@ The LLM selects a channel from the RAG-approved list. `LedgerTools.pickBestChann
 After the LLM picks a channel, `validateChannelForAmount(channel, amount)` cross-checks the choice against hard RBI amount rules before the ledger is written:
 
 | Rule | Violation response |
-|---|---|
+|---|
+|---|
 | UPI Lite — amount > ₹500 | `CHANNEL_MISMATCH: UPI Lite is only for ≤₹500. Corrected channel: UPI/NEFT/RTGS. Re-invoke with channel=X.` |
 | UPI — amount > ₹1,00,000 | `CHANNEL_MISMATCH: UPI limit is ₹1L. Corrected channel: NEFT/RTGS. Re-invoke with channel=X.` |
-| RTGS — amount < ₹2,00,000 | `CHANNEL_MISMATCH: RTGS minimum is ₹2L. Corrected channel: NEFT. Re-invoke with channel=X.` |
-| Cash — amount ≥ ₹2,00,000 | `CHANNEL_MISMATCH: Cash ≥₹2L violates Section 269ST. Corrected channel: NEFT/RTGS. Re-invoke with channel=X.` |
+| RTGS — amount < ₹2,00,000 | `CHANNEL_MISMATCH: RTGS minimum is ₹2L. Corrected channel: UPI Lite/UPI/NEFT. Re-invoke with channel=X.` |
 
 On receiving a `CHANNEL_MISMATCH:` sentinel the LLM **automatically re-invokes the tool** with the corrected channel. The `@Tool` description instructs this behaviour explicitly. No ledger write occurs on a mismatch.
 
@@ -582,6 +607,9 @@ These rules are sourced from `indian-payment-regulatory-framework.txt` in the RA
 |---|---|---|
 | `userId` | Must match `^[a-zA-Z0-9_]{4,64}$` | `FraudContextService.getBehavioralSimilarityScore()` |
 | `sessionId` | Validated by regex; must not be null or blank | `PaSSController`, `MongoLedgerService` |
+| `beneficiary` | Required and non-blank for `transferFunds` | `MongoLedgerService.commitSwitchAtomic()` |
+| `bankName` | Required and non-blank for `switchMandate` | `MongoLedgerService.commitMandateAtomic()` |
+| `amount` | Must be > 0; credit capped at ₹10,00,000 | `AccountBalanceService`, `LedgerTools.receiveFunds()` |
 | CORS origins | Restricted to `${app.cors.allowed-origins:http://localhost:3000}` | Spring Security config |
 
 ---
@@ -641,7 +669,15 @@ Real-time context window for Supervisor Agent:
 
 ### C. Deterministic Ledger (transactions)
 
-Result of agent tool execution with XAI snapshot. **Financial account identifiers encrypted:**
+Result of agent tool execution with XAI snapshot. **Financial account identifiers encrypted.**
+
+All three tool methods produce a `TransactionRecord`:
+
+| Tool | `instructionType` | Amount | Notes |
+|---|---|---|---|
+| `transferFunds` | `PASS_MONEY_TRANSFER` | > 0 | Debit sender; P2P credit recipient if registered |
+| `receiveFunds` | `PASS_MONEY_RECEIVE` | > 0 | Credit sender |
+| `switchMandate` | `PASS_MANDATE_SWITCH` | 0.0 | No money movement; ledger record for audit |
 
 ```json
 {
@@ -684,7 +720,7 @@ Immutable audit trail for regulators:
   "related_transaction": "TXN_PASS_55443322",
   "event_type": "FRAUD_INTERVENTION",
   "timestamp": ISODate("2026-03-29T21:25:00Z"),
-  "model_used": "qwen2.5:latest",
+  "model_used": "qwen2.5:3b",
   "inputs": {
     "metadata_snapshot": {
       "network_latency": "400ms",
@@ -725,8 +761,6 @@ Users click the 👁️ button on the dashboard UI to decrypt:
 2. `AccountBalanceService.revealPii()` reads the profile (QE driver decrypts transparently) and returns the plaintext value
 3. Service logs `[PII-REVEAL] userId=… field=… requestedAt=…` at INFO level for compliance audit
 4. UI shows the plaintext; a second click re-masks locally (no server round-trip)
-
-> **Why not pure client-side masking?** The HTTP response body previously contained the plaintext string, meaning any browser dev-tools inspection or network proxy would reveal PII. The server-side masking ensures the raw wire value is always the masked form unless the user explicitly requests the reveal.
 
 **QE Key Generation:**
 - Master encryption key generated in `DatabaseInitializer.java` during app startup
@@ -1584,8 +1618,6 @@ PaSSController ──► ollamaMetrics.record(out, in, elapsedMs)
                     Sidebar.tsx ──► "Last Request Tokens" panel (In / Out / Total / t/s)
 ```
 
-> **Previous behaviour (removed):** A `@Scheduled` probe sent `POST /api/generate` with `stream=false` to Ollama to measure latency. When Ollama was busy with a real streaming request, the probe timed out and produced `[scheduling-1] WARN Probe failed: request timed out` noise. The passive recorder eliminates this entirely.
-
 ### Connection Pool Configuration
 
 **MongoDB Primary (pass_main):**
@@ -1623,7 +1655,7 @@ HttpClient httpClient = HttpClient.newBuilder()
 ```
 
 **Timeouts:**
-- LLM requests: 30 seconds
+- LLM requests: 900 seconds
 - HTTP connect: 10 seconds
 - HTTP request: 30 seconds
 
@@ -1661,7 +1693,7 @@ java -jar target/ai-native-payments-1.0.0.jar
 docker-compose up --build
 
 # Check service health
-curl http://localhost:8080/actuator/health
+curl http://localhost:8080/api/v1/agent/health
 ```
 
 ### Application Properties
@@ -1801,7 +1833,7 @@ curl -X POST http://localhost:8080/api/v1/operator/escalations/{escalation_id}/a
 
 ### Code Quality
 
-- Zero compilation errors (55+ fixed during migration)
+- Zero compilation errors
 - All Lombok annotations migrated to manual fields for Java 21 compatibility
 - Jackson for type-safe JSON handling
 - SLF4J logging throughout
@@ -1876,14 +1908,34 @@ curl http://localhost:8080/api/v1/operator/escalations/pending | jq
 2. HitlOperatorDashboard component properly imported
 3. API endpoints accessible from frontend (check CORS settings)
 
+### Transaction Tools Not Executing
+
+**Symptom:** LLM responds in plain text; no `Transfer tool invoked` log lines visible
+
+**Diagnosis:**
+```bash
+# 1. Check toolsAvailable field
+curl -s http://localhost:8080/api/v1/agent/health | jq .toolsAvailable
+# Expected: true
+
+# 2. Check token budget in logs
+docker logs api-gateway | grep 'out=.*tokens'
+# If out < 100 tokens: context window is too small; increase LLM_NUM_CTX
+
+# 3. Check if supervisor initialized with tools
+docker logs api-gateway | grep 'Supervisor Agent initialized'
+# Should show 'with tool support', not 'tool-less mode'
+```
+
+**Solution — `toolsAvailable: false`:** Tools failed to initialize. Check MongoDB connectivity and `VOYAGE_API_KEY`.
+
+**Solution — context window exhaustion:** Increase `LLM_NUM_CTX` in `.env` (current default: 8192; try 16384 for long sessions).
+
 ### Embedding Service Timeout
 
-**Symptom:** `"Connection timeout to embedding-service:8000"`
+**Symptom:** RAG retrieval fails; no `[RELEVANT KNOWLEDGE]` in logs
 
-**Solution:**
-- Verify container is running: `docker-compose ps`
-- Check health: `curl http://localhost:8001/health`
-- View logs: `docker-compose logs embedding-service`
+**Solution:** Check `VOYAGE_API_KEY` is set in `.env`; Voyage AI is the only external dependency for RAG and temporal recall.
 
 ---
 
@@ -1906,9 +1958,11 @@ curl http://localhost:8080/api/v1/operator/escalations/pending | jq
 
 ## 15. Future Enhancements
 
-- [ ] Multi-language LLM support (expand beyond qwen)
+- [ ] Spring Security + JWT authentication (currently no auth — sessionId is client-provided)
+- [ ] Production LLM upgrade from `qwen2.5:3b` to a larger or API-hosted model for higher tool-call accuracy
+- [ ] Multi-language LLM support
 - [ ] Advanced anomaly detection with statistical baselines
 - [ ] Custom fraud rule engine alongside AI reasoning
 - [ ] Kubernetes orchestration for auto-scaling
-- [ ] Performance monitoring with Prometheus metrics
+- [ ] Prometheus metrics integration
 - [ ] Batch processing for high-volume mandate switches

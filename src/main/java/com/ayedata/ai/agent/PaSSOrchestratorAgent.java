@@ -36,6 +36,7 @@ public class PaSSOrchestratorAgent {
 
     private Supervisor supervisor;
     private StreamingSupervisor streamingSupervisor;
+    private boolean toolsAvailable = false;
 
     public PaSSOrchestratorAgent(LedgerTools ledgerTools,
                                  OllamaChatModel chatLanguageModel,
@@ -118,8 +119,10 @@ public class PaSSOrchestratorAgent {
                         .tools(ledgerTools)
                         .build();
                 log.info("✅ Supervisor Agent initialized with tool support and MongoDB memory.");
+                toolsAvailable = true;
             } catch (Exception toolsException) {
-                log.warn("⚠️  Tool support initialization failed. Falling back to tool-less mode. Reason: {}", toolsException.getMessage());
+                log.error("❌ CRITICAL: Tool support initialization failed. Transaction tools will NOT be available. Reason: {}", toolsException.getMessage());
+                log.error("❌ This means the LLM cannot execute payment transactions. Check MongoDB connectivity and service dependencies.");
                 this.supervisor = AiServices.builder(Supervisor.class)
                         .chatModel(chatLanguageModel)
                         .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
@@ -128,7 +131,7 @@ public class PaSSOrchestratorAgent {
                                 .chatMemoryStore(chatMemoryStore)
                                 .build())
                         .build();
-                log.info("✅ Supervisor Agent initialized in tool-less mode with MongoDB memory.");
+                log.warn("✅ Supervisor Agent initialized in tool-less mode with MongoDB memory. TRANSACTION TOOLS DISABLED.");
             }
 
             // Streaming supervisor (for /orchestrate-stream endpoint)
@@ -144,8 +147,8 @@ public class PaSSOrchestratorAgent {
                         .build();
                 log.info("✅ Streaming Supervisor Agent initialized with tool support.");
             } catch (Exception toolsException) {
-                log.warn("⚠️  Streaming tool support initialization failed. Falling back to tool-less mode. Reason: {}",
-                        toolsException.getMessage());
+                log.error("❌ CRITICAL: Streaming tool support initialization failed. Transaction tools will NOT be available for streaming. Reason: {}", toolsException.getMessage());
+                log.error("❌ This means the LLM cannot execute payment transactions in streaming mode. Check MongoDB connectivity and service dependencies.");
                 this.streamingSupervisor = AiServices.builder(StreamingSupervisor.class)
                         .streamingChatModel(streamingChatModel)
                         .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
@@ -154,7 +157,7 @@ public class PaSSOrchestratorAgent {
                                 .chatMemoryStore(chatMemoryStore)
                                 .build())
                         .build();
-                log.info("✅ Streaming Supervisor Agent initialized in tool-less mode.");
+                log.warn("✅ Streaming Supervisor Agent initialized in tool-less mode.");
             }
 
         } catch (Exception e) {
@@ -166,11 +169,24 @@ public class PaSSOrchestratorAgent {
     }
 
     /**
+     * Check if transaction tools are available for execution.
+     * @return true if tools are initialized and can execute transactions
+     */
+    public boolean areToolsAvailable() {
+        return toolsAvailable;
+    }
+
+    /**
      * Orchestrate a payment intent through the Supervisor Agent, enriched with
      * RAG context and temporal memory recall.
      */
     public String orchestrateSwitch(String sessionId, String userId, String userIntent) {
         log.info("📨 Session {}: Routing user intent to Supervisor Agent (user={})...", sessionId, userId);
+
+        if (!toolsAvailable) {
+            log.warn("⚠️ Session {}: Tools not available, cannot execute transactions", sessionId);
+            return "I apologize, but the transaction system is currently unavailable. Please try again later or contact support if this issue persists.";
+        }
 
         ledgerTools.registerSession(sessionId, userId);
         try {
@@ -198,6 +214,12 @@ public class PaSSOrchestratorAgent {
      */
     public TokenStream orchestrateSwitchStreaming(String sessionId, String userId, String userIntent) {
         log.info("📨 Session {}: Routing user intent to Streaming Supervisor (user={})...", sessionId, userId);
+
+        if (!toolsAvailable) {
+            log.warn("⚠️ Session {}: Tools not available for streaming, cannot execute transactions", sessionId);
+            throw new IllegalStateException("Transaction tools are currently unavailable. Please try again later.");
+        }
+
         ledgerTools.registerSession(sessionId, userId);
 
         String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);

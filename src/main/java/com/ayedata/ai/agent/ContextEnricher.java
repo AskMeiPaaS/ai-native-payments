@@ -4,6 +4,7 @@ import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.rag.service.RagService;
 import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.TemporalMemoryService;
+import com.ayedata.util.TextUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -25,9 +26,9 @@ public class ContextEnricher {
     private static final Logger log = LoggerFactory.getLogger(ContextEnricher.class);
 
     /** Max chars for agent reply text within each recalled temporal turn. */
-    private static final int MAX_TEMPORAL_REPLY_CHARS = 150;
+    private static final int MAX_TEMPORAL_REPLY_CHARS = 80;
     /** Max chars for user text within each recalled temporal turn. */
-    private static final int MAX_TEMPORAL_USER_CHARS = 100;
+    private static final int MAX_TEMPORAL_USER_CHARS = 60;
 
     /**
      * Canonical channel names paired with the uppercase keywords used to detect
@@ -119,7 +120,7 @@ public class ContextEnricher {
 
         // 1. RAG — domain knowledge relevant to this query (budget managed by RagService)
         try {
-            String ragContext = ragService.retrieveContext(userIntent, 2);
+            String ragContext = ragService.retrieveContext(userIntent, 1);
             if (!ragContext.isBlank()) {
                 sb.append("[RELEVANT KNOWLEDGE]\n").append(ragContext).append("\n\n");
                 ragChars = ragContext.length();
@@ -140,12 +141,12 @@ public class ContextEnricher {
 
         // 3. Temporal memory — compacted past turns
         try {
-            List<Map<String, String>> history = temporalMemoryService.recallRelevantHistory(sessionId, userIntent, 2);
+            List<Map<String, String>> history = temporalMemoryService.recallRelevantHistory(sessionId, userIntent, 1);
             if (!history.isEmpty()) {
                 sb.append("[CONVERSATION HISTORY]\n");
                 for (Map<String, String> turn : history) {
-                    sb.append("User: ").append(truncate(turn.get("userText"), MAX_TEMPORAL_USER_CHARS)).append("\n");
-                    sb.append("Agent: ").append(truncate(turn.get("aiText"), MAX_TEMPORAL_REPLY_CHARS)).append("\n\n");
+                    sb.append("User: ").append(TextUtils.truncateWithEllipsis(turn.get("userText"), MAX_TEMPORAL_USER_CHARS)).append("\n");
+                    sb.append("Agent: ").append(TextUtils.truncateWithEllipsis(turn.get("aiText"), MAX_TEMPORAL_REPLY_CHARS)).append("\n\n");
                 }
                 temporalTurns = history.size();
             }
@@ -184,10 +185,5 @@ public class ContextEnricher {
             }
         }
         return approved;
-    }
-
-    private static String truncate(String s, int maxLen) {
-        if (s == null) return "";
-        return s.length() > maxLen ? s.substring(0, maxLen) + "…" : s;
     }
 }

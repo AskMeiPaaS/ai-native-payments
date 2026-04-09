@@ -12,6 +12,8 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
+import com.ayedata.util.TextUtils;
+
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -59,9 +61,9 @@ public class TemporalMemoryService {
 
             Document doc = new Document()
                     .append("sessionId", sessionId)
-                    .append("userText", truncate(userText, 2000))
-                    .append("aiText", truncate(aiText, 4000))
-                    .append("turnEmbedding", toDoubleList(vector))
+                    .append("userText", TextUtils.truncate(userText, 2000))
+                    .append("aiText", TextUtils.truncate(aiText, 4000))
+                    .append("turnEmbedding", TextUtils.toDoubleList(vector))
                     .append("timestamp", new Date());
 
             memoryMongoTemplate.insert(doc, COLLECTION);
@@ -142,7 +144,7 @@ public class TemporalMemoryService {
         Document vectorSearchStage = new Document("$vectorSearch", new Document()
                 .append("index", "memory_timeline_vector_index")
                 .append("path", "turnEmbedding")
-                .append("queryVector", toDoubleList(queryVector))
+                .append("queryVector", TextUtils.toDoubleList(queryVector))
                 .append("numCandidates", topK * 15)
                 .append("limit", topK)
                 .append("filter", new Document("sessionId", sessionId)));
@@ -169,23 +171,10 @@ public class TemporalMemoryService {
     private static List<Map<String, String>> toTurnList(List<Document> docs) {
         return docs.stream()
                 .map(d -> Map.of(
-                        "userText", nullToEmpty(d.getString("userText")),
-                        "aiText", nullToEmpty(d.getString("aiText"))))
+                        "userText", TextUtils.nullToEmpty(d.getString("userText")),
+                        "aiText", TextUtils.nullToEmpty(d.getString("aiText"))))
                 .collect(Collectors.toList());
     }
 
-    private static List<Double> toDoubleList(float[] floats) {
-        List<Double> list = new ArrayList<>(floats.length);
-        for (float f : floats) list.add((double) f);
-        return list;
-    }
 
-    private static String truncate(String s, int maxLen) {
-        if (s == null) return "";
-        return s.length() > maxLen ? s.substring(0, maxLen) : s;
-    }
-
-    private static String nullToEmpty(String s) {
-        return s == null ? "" : s;
-    }
 }

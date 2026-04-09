@@ -7,13 +7,24 @@ import com.ayedata.payment.PaymentSwitchRouter;
 import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.FraudContextService;
 import com.ayedata.service.MongoLedgerService;
+import com.ayedata.domain.FinancialData;
+import com.ayedata.domain.TransactionRecord;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Component;
 
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Component
@@ -30,13 +41,22 @@ public class LedgerTools {
     private final FraudContextService fraudContextService;
     private final PaymentSwitchRouter paymentSwitchRouter;
     private final MongoLedgerService mongoLedgerService;
+    private final AccountBalanceService accountBalanceService;
+    private final MongoTemplate mongoTemplate;
+
+    private static final DateTimeFormatter TXN_DATE_FMT =
+            DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm").withZone(ZoneId.of("Asia/Kolkata"));
 
     public LedgerTools(FraudContextService fraudContextService,
                        PaymentSwitchRouter paymentSwitchRouter,
-                       MongoLedgerService mongoLedgerService) {
+                       MongoLedgerService mongoLedgerService,
+                       AccountBalanceService accountBalanceService,
+                       @Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate) {
         this.fraudContextService = fraudContextService;
         this.paymentSwitchRouter = paymentSwitchRouter;
         this.mongoLedgerService = mongoLedgerService;
+        this.accountBalanceService = accountBalanceService;
+        this.mongoTemplate = mongoTemplate;
     }
 
     /** Register a session → userId mapping before orchestration starts. */
@@ -242,5 +262,160 @@ public class LedgerTools {
             log.warn("Mandate switch blocked: {}", ex.getMessage());
             return "MANDATE_BLOCKED: " + ex.getMessage();
         }
+    }
+
+    // ── Read-only query tools ──
+
+    @Tool("""
+            Returns the user's current account balance and account details. \
+            Use this when the user asks: 'what is my balance', 'how much do I have', \
+            'show my account', 'check balance', 'account details', etc.\
+            """)
+    public String checkBalance(@ToolMemoryId String memoryId) {
+        String userId = resolveUserId(memoryId);
+        log.info("Balance query tool invoked: session={} user={}", memoryId, userId);
+        try {
+            double balance = accountBalanceService.getCurrentBalance(userId);
+            Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
+            String displayName = registry.getOrDefault(userId, userId);
+            Map<String, String> accountRegistry = UserProfileInitializer.getDemoAccountRegistry();
+            String accountNo = null;
+            for (var entry : accountRegistry.entrySet()) {
+                if (entry.getValue().equals(userId)) { accountNo = entry.getKey(); break; }
+            }
+            return String.format("BALANCE: %s (Account: %s) has a current balance of ₹%.2f INR.",
+                    displayName, accountNo != null ? accountNo : "N/A", balance);
+        } catch (Exception e) {
+            log.warn("Balance query failed for user {}: {}", userId, e.getMessage());
+            return "QUERY_ERROR: Unable to retrieve balance. " + e.getMessage();
+        }
+    }
+
+    @Tool("""
+            Returns the user's recent transactions (last 5 by default). \
+            Use this when the user asks: 'show my transactions', 'recent payments', \
+            'transaction history', 'what did I pay', 'last transactions', \
+            'show my activity', 'payment history', etc.\
+            """)
+    public String recentTransactions(@ToolMemoryId String memoryId,
+                                     @P(value = "Number of transactions to return (1-10). Defaults to 5.", required = false) Integer count) {
+        String userId = resolveUserId(memoryId);
+        int limit = (count != null && count >= 1 && count <= 10) ? count : 5;
+        log.info("Transaction history tool invoked: session={} user={} limit={}", memoryId, userId, limit);
+        try {
+            Query query = new Query(Criteria.where("userId").is(userId))
+                    .with(Sort.by(Sort.Direction.DESC, "createdAt"))
+                    .limit(limit);
+            List<TransactionRecord> txns = mongoTemplate.find(query, TransactionRecord.class);
+
+            if (txns.isEmpty()) {
+                return "TRANSACTIONS: No transactions found for your account.";
+            }
+
+            Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("TRANSACTIONS: Showing %d most recent transaction(s):\n", txns.size()));
+            for (int i = 0; i < txns.size(); i++) {
+                TransactionRecord txn = txns.get(i);
+                sb.append(formatTransaction(i + 1, txn, userId, registry));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            log.warn("Transaction query failed for user {}: {}", userId, e.getMessage());
+            return "QUERY_ERROR: Unable to retrieve transactions. " + e.getMessage();
+        }
+    }
+
+    @Tool("""
+            Searches the user's transaction history for payments to a specific person or account. \
+            Use this when the user asks: 'did I pay Priya', 'how much did I send to Arjun', \
+            'payments to <name>', 'show transfers to <person>', etc.\
+            """)
+    public String searchTransactions(@ToolMemoryId String memoryId,
+                                     @P("Name, userId, or account number of the person to search for") String searchTerm) {
+        String userId = resolveUserId(memoryId);
+        log.info("Transaction search tool invoked: session={} user={} search='{}'", memoryId, userId, searchTerm);
+
+        if (searchTerm == null || searchTerm.isBlank()) {
+            return "QUERY_ERROR: Please specify a person or account to search for.";
+        }
+
+        try {
+            // Resolve the search term to a userId if possible
+            String targetUserId = UserProfileInitializer.resolveUserIdByNameOrId(searchTerm);
+
+            Query query = new Query(Criteria.where("userId").is(userId))
+                    .with(Sort.by(Sort.Direction.DESC, "createdAt"))
+                    .limit(10);
+            List<TransactionRecord> allTxns = mongoTemplate.find(query, TransactionRecord.class);
+
+            Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
+            String searchUpper = searchTerm.toUpperCase();
+
+            List<TransactionRecord> matched = allTxns.stream().filter(txn -> {
+                FinancialData fd = txn.getFinancialData();
+                if (fd == null) return false;
+                // Match by resolved userId
+                if (targetUserId != null) {
+                    if (targetUserId.equalsIgnoreCase(fd.getRecipient_account())
+                            || targetUserId.equalsIgnoreCase(fd.getDonor_account())
+                            || targetUserId.equalsIgnoreCase(fd.getMerchantId())) {
+                        return true;
+                    }
+                }
+                // Match by name/text in merchantId or recipient
+                String merchant = fd.getMerchantId() != null ? fd.getMerchantId().toUpperCase() : "";
+                String recipient = fd.getRecipient_account() != null ? fd.getRecipient_account().toUpperCase() : "";
+                String donor = fd.getDonor_account() != null ? fd.getDonor_account().toUpperCase() : "";
+                return merchant.contains(searchUpper) || recipient.contains(searchUpper) || donor.contains(searchUpper);
+            }).toList();
+
+            if (matched.isEmpty()) {
+                return String.format("TRANSACTIONS: No transactions found involving '%s'.", searchTerm);
+            }
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("TRANSACTIONS: Found %d transaction(s) involving '%s':\n", matched.size(), searchTerm));
+            for (int i = 0; i < matched.size(); i++) {
+                sb.append(formatTransaction(i + 1, matched.get(i), userId, registry));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            log.warn("Transaction search failed for user {}: {}", userId, e.getMessage());
+            return "QUERY_ERROR: Unable to search transactions. " + e.getMessage();
+        }
+    }
+
+    /** Format a single transaction record as a numbered line for tool output. */
+    private String formatTransaction(int index, TransactionRecord txn, String callerUserId, Map<String, String> registry) {
+        FinancialData fd = txn.getFinancialData();
+        String instrType = txn.getInstructionType();
+        boolean isCredit = instrType != null && instrType.contains("RECEIVE");
+        String type = isCredit ? "CREDIT" : "DEBIT";
+        double amount = fd != null ? fd.getAmount() : 0;
+        String channel = txn.getPaymentMethod() != null ? txn.getPaymentMethod() : "—";
+        String date = txn.getCreatedAt() != null ? TXN_DATE_FMT.format(txn.getCreatedAt()) : "—";
+
+        // Resolve counter-party to a display name
+        String counterParty = "—";
+        if (fd != null) {
+            if (isCredit) {
+                counterParty = resolveName(fd.getDonor_account(), callerUserId, registry);
+            } else {
+                String target = fd.getRecipient_account() != null ? fd.getRecipient_account() : fd.getMerchantId();
+                counterParty = resolveName(target, callerUserId, registry);
+            }
+        }
+
+        return String.format("%d. %s ₹%.2f %s %s via %s on %s (Ref: %s)\n",
+                index, type, amount, isCredit ? "from" : "to", counterParty, channel, date, txn.getId());
+    }
+
+    /** Resolve a userId or name to a human display name. */
+    private static String resolveName(String raw, String callerUserId, Map<String, String> registry) {
+        if (raw == null || raw.isBlank()) return "—";
+        if (raw.equalsIgnoreCase(callerUserId)) return "You";
+        String name = registry.get(raw);
+        return name != null ? name : raw;
     }
 }

@@ -193,9 +193,26 @@ public class PaSSController {
                     }
                 });
 
-                // Get the token stream from the streaming supervisor
+                // Get the token stream from the two-fold streaming orchestrator,
+                // passing a stage callback that emits SSE "stage" events to the UI.
                 TokenStream tokenStream = orchestratorAgent.orchestrateSwitchStreaming(
-                        request.getSessionId(), request.getUserId(), request.getUserIntent());
+                        request.getSessionId(), request.getUserId(), request.getUserIntent(),
+                        (stageName, stageData) -> {
+                            if (emitterCompleted.get()) return;
+                            try {
+                                Map<String, Object> payload = new LinkedHashMap<>(stageData);
+                                payload.put("stage", stageName);
+                                SseEmitter.SseEventBuilder stageEvent = SseEmitter.event()
+                                        .id(request.getSessionId())
+                                        .name("stage")
+                                        .data(objectMapper.writeValueAsString(payload))
+                                        .reconnectTime(1000);
+                                trySendEvent(emitter, stageEvent, request.getSessionId(), emitterCompleted);
+                                log.debug("Session {}: SSE stage event → {}", request.getSessionId(), stageName);
+                            } catch (Exception e) {
+                                log.warn("Session {}: Failed to send stage event '{}'", request.getSessionId(), stageName, e);
+                            }
+                        });
 
                 AtomicInteger charCount = new AtomicInteger(0);
                 StringBuilder fullReply = new StringBuilder();

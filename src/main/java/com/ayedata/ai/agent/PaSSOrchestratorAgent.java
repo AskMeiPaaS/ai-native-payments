@@ -2,7 +2,11 @@ package com.ayedata.ai.agent;
 
 import com.ayedata.ai.tools.LedgerTools;
 import com.ayedata.config.MongoChatMemoryStore;
+import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.service.TemporalMemoryService;
+import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.internal.Json;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.ollama.OllamaStreamingChatModel;
@@ -11,14 +15,26 @@ import dev.langchain4j.service.MemoryId;
 import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.TokenStream;
 import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.tool.DefaultToolExecutor;
+import dev.langchain4j.service.tool.ToolExecutor;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.lang.reflect.Method;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.function.BiConsumer;
+
 /**
  * PaSS Orchestrator Agent: Supervisor backed by MongoDB chat memory,
  * temporal memory recall, and RAG-enriched context.
+ *
+ * Two-fold orchestration:
+ *   Step 1: LangChain4j IntentClassifier — lightweight LLM call to classify intent + extract params
+ *   Step 2: Execute LangChain4j @Tool methods directly based on extracted params
+ *   Step 3: LangChain4j FormattingSupervisor — stream the formatted result to the user
  *
  * @see ContextEnricher  — builds enriched intent with RAG + temporal context
  * @see MongoChatMemoryStore — per-session 10-message window in MongoDB
@@ -36,7 +52,12 @@ public class PaSSOrchestratorAgent {
 
     private Supervisor supervisor;
     private StreamingSupervisor streamingSupervisor;
+    private IntentClassifier intentClassifier;
+    private FormattingSupervisor formattingSupervisor;
     private boolean toolsAvailable = false;
+
+    /** LangChain4j ToolExecutor registry — maps tool method name → executor. */
+    private final Map<String, ToolExecutor> toolExecutors = new LinkedHashMap<>();
 
     public PaSSOrchestratorAgent(LedgerTools ledgerTools,
                                  OllamaChatModel chatLanguageModel,
@@ -56,40 +77,22 @@ public class PaSSOrchestratorAgent {
             You are PaSS, an Indian banking payment assistant.
             You handle: UPI, NEFT, RTGS, IMPS, and cheque payments.
 
-            Rules:
-            1. Use [RELEVANT KNOWLEDGE] as your primary source. Answer from it first.
-            2. Use [CONVERSATION HISTORY] for continuity with prior turns.
-            3. Answer the [CURRENT REQUEST] concisely in 2-4 sentences.
-            4. For send/pay/transfer/outbound requests with an amount, ALWAYS call the transferFunds tool immediately. \
-               Pass the beneficiary exactly as given by the user — this can be a person name, bank account number, UPI ID, or merchant ID. \
-               If the user explicitly states a channel (e.g. "via UPI", "through NEFT"), pass it to the tool exactly as given. \
-               If the user does NOT specify a channel, call the tool without a channel — the tool will auto-select the optimal channel. \
-               NEVER reason about whether a channel or amount is valid — always call the tool and rely on CHANNEL_MISMATCH responses.
-            5. For mandate switches without money movement, call the switchMandate tool.
-            6. For receive/add/deposit/top-up/credit/inbound fund requests with an amount, ALWAYS call the receiveFunds tool immediately. \
-               If the user explicitly states a channel, pass it to the tool exactly as given. \
-               If the user does NOT specify a channel, call the tool without a channel — the tool will auto-select the optimal channel. \
-               NEVER reject or warn about channel-amount compatibility yourself — always call the tool and rely on CHANNEL_MISMATCH responses.
-            7. Never claim a transfer or receipt succeeded unless a tool returned SUCCESS.
-            8. If a tool returns TRANSFER_BLOCKED or RECEIVE_BLOCKED, relay the message clearly and ask the user for any missing details.
-            9. Reply in plain text only. Never echo the knowledge sections back.
-            10. If [APPROVED CHANNELS] is absent (RAG unavailable), ask the user to retry in a moment.
-            11. [YOUR IDENTITY] tells you which user you are serving. [REGISTERED USERS] lists other users in the system. \
-                When the user mentions a name that matches a registered user, use that name as the beneficiary for transferFunds.
-            12. [YOUR ACCOUNT] shows the user's current balance and account number. Use it to answer balance inquiries directly \
-                without calling any tool.
-            13. CONFIDENCE ASSESSMENT — Before every response, silently assess how completely and unambiguously you understand the request: \
-                HIGH: all required details are present and clear (amount + identifiable beneficiary for transfers; amount for receives). \
-                MEDIUM: required details are present but one element has minor ambiguity that context resolves. \
-                LOW: a required detail is missing (no amount, no recognisable beneficiary) OR the intent itself is unclear. \
-                Act immediately on HIGH and MEDIUM confidence. For LOW confidence, do NOT call any tool — ask ONE focused clarifying question instead.
-            14. CLARIFICATION — When confidence is LOW, ask the single most important missing detail only. Examples: \
-                missing amount → "How much would you like to send to Priya?"; \
-                unrecognised beneficiary → "Who should receive ₹500? Please share their name, UPI ID, or account number."; \
-                ambiguous intent → "Did you mean to send ₹20 to Priya, or did you want to check something else?"
-            15. RESPONSE WEIGHT — End every response on a new line with your confidence rating in this exact format: \
-                [Confidence: HIGH], [Confidence: MEDIUM], or [Confidence: LOW]. \
-                For pure clarification questions use [Confidence: LOW]. For successful tool outcomes use [Confidence: HIGH].
+            CRITICAL TOOL RULES:
+            1. For send/pay/transfer requests with an amount → ALWAYS call transferFunds immediately.
+               Pass the beneficiary name exactly as the user gave it.
+               If the user specified a channel, pass it. Otherwise omit it (auto-selects).
+            2. For receive/add/deposit/top-up/credit requests with an amount → ALWAYS call receiveFunds immediately.
+            3. For mandate/routing switches without money → call switchMandate.
+            4. On CHANNEL_MISMATCH response → re-call the tool with the suggested channel automatically. Do NOT ask the user.
+            5. Never claim a transfer succeeded unless the tool returned SUCCESS.
+            6. If a tool returns TRANSFER_BLOCKED or RECEIVE_BLOCKED, relay the message to the user.
+
+            GENERAL RULES:
+            7. Use [RELEVANT KNOWLEDGE] as primary source for payment channel info.
+            8. Use [YOUR ACCOUNT] to answer balance inquiries without calling any tool.
+            9. Match beneficiary names to [REGISTERED USERS] for P2P transfers.
+            10. Reply concisely in 2-4 sentences. Plain text only.
+            11. If required details are missing (no amount or no beneficiary), ask ONE clarifying question instead of calling a tool.
             """;
 
     interface Supervisor {
@@ -100,6 +103,51 @@ public class PaSSOrchestratorAgent {
     interface StreamingSupervisor {
         @SystemMessage(SYSTEM_PROMPT)
         TokenStream orchestrate(@MemoryId String sessionId, @UserMessage String userIntent);
+    }
+
+    // ── Two-fold orchestration: Step 1 classifier, Step 3 formatter ──
+
+    private static final String CLASSIFIER_PROMPT = """
+            Classify the payment request. Reply with EXACTLY 4 lines, nothing else:
+            ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
+            BENEFICIARY: person name or none
+            AMOUNT: number or 0
+            CHANNEL: channel name or auto
+            Examples:
+            - "what is my balance" → ACTION: QUERY_BALANCE
+            - "show my transactions" → ACTION: QUERY_TRANSACTIONS
+            - "did I pay Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya
+            - "how much did I send to Arjun" → ACTION: QUERY_SEARCH, BENEFICIARY: Arjun
+            """;
+
+    private static final String FORMATTER_PROMPT = """
+            You are PaSS, an Indian banking payment assistant.
+            The [TOOL RESULT] section shows the outcome of a payment tool that was already executed.
+            Summarize the result to the user in 2-3 plain text sentences.
+            If SUCCESS, confirm the amount, beneficiary, channel, and reference number.
+            If BLOCKED, explain what went wrong concisely.
+            For queries without [TOOL RESULT], answer using [RELEVANT KNOWLEDGE].
+            """;
+
+    interface IntentClassifier {
+        @SystemMessage(CLASSIFIER_PROMPT)
+        String classify(@UserMessage String userMessage);
+    }
+
+    interface FormattingSupervisor {
+        @SystemMessage(FORMATTER_PROMPT)
+        TokenStream format(@MemoryId String sessionId, @UserMessage String contextWithResult);
+    }
+
+    record ParsedIntent(String action, String beneficiary, double amount, String channel) {
+        boolean isTransfer()       { return "TRANSFER".equals(action); }
+        boolean isReceive()        { return "RECEIVE".equals(action); }
+        boolean isMandate()        { return "MANDATE".equals(action); }
+        boolean isQueryBalance()   { return "QUERY_BALANCE".equals(action); }
+        boolean isQueryTxns()      { return "QUERY_TRANSACTIONS".equals(action); }
+        boolean isQuerySearch()    { return "QUERY_SEARCH".equals(action); }
+        boolean isTransactional()  { return isTransfer() || isReceive() || isMandate(); }
+        boolean isQueryTool()      { return isQueryBalance() || isQueryTxns() || isQuerySearch(); }
     }
 
     @PostConstruct
@@ -160,12 +208,38 @@ public class PaSSOrchestratorAgent {
                 log.warn("✅ Streaming Supervisor Agent initialized in tool-less mode.");
             }
 
+            // Intent classifier (Step 1 of two-fold) — lightweight, no tools, no memory
+            this.intentClassifier = AiServices.builder(IntentClassifier.class)
+                    .chatModel(chatLanguageModel)
+                    .build();
+            log.info("✅ Intent Classifier initialized (two-fold step 1).");
+
+            // Formatting supervisor (Step 3 of two-fold) — streaming, no tools, with memory
+            this.formattingSupervisor = AiServices.builder(FormattingSupervisor.class)
+                    .streamingChatModel(streamingChatModel)
+                    .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
+                            .id(memId)
+                            .maxMessages(4)
+                            .chatMemoryStore(chatMemoryStore)
+                            .build())
+                    .build();
+            log.info("✅ Formatting Supervisor initialized (two-fold step 3).");
+
+            // Register LangChain4j ToolExecutors for every @Tool method in LedgerTools
+            for (Method method : ledgerTools.getClass().getDeclaredMethods()) {
+                if (method.isAnnotationPresent(Tool.class)) {
+                    toolExecutors.put(method.getName(), new DefaultToolExecutor(ledgerTools, method));
+                    log.debug("Registered LangChain4j ToolExecutor: {}", method.getName());
+                }
+            }
+            log.info("✅ {} LangChain4j ToolExecutors registered for programmatic invocation.", toolExecutors.size());
+
         } catch (Exception e) {
             log.error("Failed to initialize Supervisor", e);
             throw new RuntimeException("Supervisor initialization failed", e);
         }
 
-        log.info("✅ Supervisor Agent ready. MongoDB memory ✓  Temporal recall ✓  RAG ✓");
+        log.info("✅ Supervisor Agent ready. Two-fold orchestration ✓  MongoDB memory ✓  RAG ✓");
     }
 
     /**
@@ -177,11 +251,11 @@ public class PaSSOrchestratorAgent {
     }
 
     /**
-     * Orchestrate a payment intent through the Supervisor Agent, enriched with
-     * RAG context and temporal memory recall.
+     * Two-fold synchronous orchestration:
+     * Step 1: classify intent via LangChain4j, Step 2: execute tool, Step 3: format via LLM.
      */
     public String orchestrateSwitch(String sessionId, String userId, String userIntent) {
-        log.info("📨 Session {}: Routing user intent to Supervisor Agent (user={})...", sessionId, userId);
+        log.info("📨 Session {}: Two-fold sync orchestration (user={})...", sessionId, userId);
 
         if (!toolsAvailable) {
             log.warn("⚠️ Session {}: Tools not available, cannot execute transactions", sessionId);
@@ -190,11 +264,39 @@ public class PaSSOrchestratorAgent {
 
         ledgerTools.registerSession(sessionId, userId);
         try {
-            String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
-            String reply = supervisor.orchestrate(sessionId, enrichedIntent);
-            log.debug("✅ Session {}: Supervisor completed orchestration", sessionId);
+            // Step 1: Classify
+            String classifierCtx = buildClassifierContext(userId, userIntent);
+            ParsedIntent intent;
+            try {
+                String raw = intentClassifier.classify(classifierCtx);
+                log.info("Session {}: Classifier → {}", sessionId, raw.replace("\n", " | "));
+                intent = parseClassification(raw);
+            } catch (Exception e) {
+                log.warn("Session {}: Classification failed, falling back to supervisor", sessionId, e);
+                String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+                return supervisor.orchestrate(sessionId, enrichedIntent);
+            }
 
-            // Archive this turn asynchronously — never blocks the response path
+            // Step 2: Execute tool
+            String toolResult = null;
+            if (intent.isTransactional() && intent.amount() > 0) {
+                try {
+                    toolResult = executeToolDirectly(sessionId, intent);
+                    log.info("Session {}: Tool result: {}", sessionId, toolResult);
+                } catch (Exception e) {
+                    log.error("Session {}: Tool execution failed", sessionId, e);
+                    toolResult = "TOOL_ERROR: " + e.getMessage();
+                }
+            }
+
+            // Step 3: Format reply
+            String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+            if (toolResult != null) {
+                enrichedIntent += "\n\n[TOOL RESULT]\n" + toolResult;
+            }
+            String reply = supervisor.orchestrate(sessionId, enrichedIntent);
+            log.debug("✅ Session {}: Two-fold orchestration completed", sessionId);
+
             Thread.ofVirtual().name("temporal-archive-" + sessionId)
                     .start(() -> temporalMemoryService.archiveTurn(sessionId, userIntent, reply));
 
@@ -208,21 +310,130 @@ public class PaSSOrchestratorAgent {
     }
 
     /**
-     * Streaming orchestration: returns a TokenStream that emits tokens in real-time.
-     * Pre-LLM tool enforcement runs synchronously; the result is injected into the
-     * enriched intent so the LLM only formats the confirmed outcome.
+     * Two-fold streaming orchestration with stage notifications:
+     * <ol>
+     *   <li>LLM call 1 (LangChain4j IntentClassifier): classify intent + extract params</li>
+     *   <li>Execute LangChain4j @Tool methods directly based on extracted params</li>
+     *   <li>LLM call 2 (LangChain4j FormattingSupervisor): stream formatted response</li>
+     * </ol>
+     * The {@code stageCallback} receives (stageName, detailJson) at each step so the
+     * controller can push SSE stage events to the UI in real time.
+     * Falls back to the original single-pass streaming supervisor if classification fails.
      */
-    public TokenStream orchestrateSwitchStreaming(String sessionId, String userId, String userIntent) {
-        log.info("📨 Session {}: Routing user intent to Streaming Supervisor (user={})...", sessionId, userId);
+    public TokenStream orchestrateSwitchStreaming(String sessionId, String userId, String userIntent,
+                                                  BiConsumer<String, Map<String, Object>> stageCallback) {
+        log.info("📨 Session {}: Two-fold orchestration start (user={})", sessionId, userId);
 
         if (!toolsAvailable) {
-            log.warn("⚠️ Session {}: Tools not available for streaming, cannot execute transactions", sessionId);
+            log.warn("⚠️ Session {}: Tools not available for streaming", sessionId);
             throw new IllegalStateException("Transaction tools are currently unavailable. Please try again later.");
         }
 
         ledgerTools.registerSession(sessionId, userId);
 
+        // ── Step 1: Intent classification via LangChain4j (lightweight LLM call) ──
+        stageCallback.accept("classifying", Map.of(
+                "message", "Step 1 · Classifying your intent...",
+                "step", 1, "totalSteps", 3));
+
+        String classifierCtx = buildClassifierContext(userId, userIntent);
+        ParsedIntent intent;
+        try {
+            log.info("Session {}: Step 1 — classifying intent ({} chars)...", sessionId, classifierCtx.length());
+            String raw = intentClassifier.classify(classifierCtx);
+            log.info("Session {}: Classifier output: {}", sessionId, raw.replace("\n", " | "));
+            intent = parseClassification(raw);
+            log.info("Session {}: Parsed → action={} beneficiary={} amount={} channel={}",
+                    sessionId, intent.action(), intent.beneficiary(), intent.amount(), intent.channel());
+
+            Map<String, Object> classifiedData = new java.util.LinkedHashMap<>();
+            classifiedData.put("message", formatClassifiedMessage(intent));
+            classifiedData.put("step", 1);
+            classifiedData.put("totalSteps", 3);
+            classifiedData.put("action", intent.action());
+            classifiedData.put("amount", intent.amount());
+            classifiedData.put("beneficiary", intent.beneficiary());
+            classifiedData.put("channel", intent.channel());
+            stageCallback.accept("classified", classifiedData);
+
+        } catch (Exception e) {
+            log.warn("Session {}: Classification failed, falling back to direct streaming", sessionId, e);
+            stageCallback.accept("fallback", Map.of(
+                    "message", "Intent classification unavailable — using direct orchestration.",
+                    "step", 1, "totalSteps", 1));
+            String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+            return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
+        }
+
+        // ── Step 2: Execute @Tool method directly if transactional or query ──
+        String toolResult = null;
+        if (intent.isTransactional() && intent.amount() > 0) {
+            String channelLabel = "auto".equalsIgnoreCase(intent.channel()) ? "auto-select" : intent.channel();
+            stageCallback.accept("executing", Map.of(
+                    "message", String.format("Step 2 · Executing %s via %s...",
+                            intent.action().toLowerCase(), channelLabel),
+                    "step", 2, "totalSteps", 3,
+                    "action", intent.action(), "channel", channelLabel));
+            try {
+                log.info("Session {}: Step 2 — executing {} tool directly...", sessionId, intent.action());
+                toolResult = executeToolDirectly(sessionId, intent);
+                log.info("Session {}: Tool result: {}", sessionId, toolResult);
+
+                boolean success = toolResult != null && toolResult.startsWith("SUCCESS");
+                String extractedChannel = extractChannelFromResult(toolResult);
+                Map<String, Object> execData = new java.util.LinkedHashMap<>();
+                execData.put("message", success
+                        ? String.format("Step 2 · %s %s complete.",
+                                intent.action(), extractedChannel != null ? "via " + extractedChannel : "")
+                        : "Step 2 · Tool returned: " + (toolResult != null ? toolResult.substring(0, Math.min(toolResult.length(), 80)) : "null"));
+                execData.put("step", 2);
+                execData.put("totalSteps", 3);
+                execData.put("success", success);
+                if (extractedChannel != null) execData.put("channel", extractedChannel);
+                stageCallback.accept("executed", execData);
+
+            } catch (Exception e) {
+                log.error("Session {}: Tool execution failed", sessionId, e);
+                toolResult = "TOOL_ERROR: " + e.getMessage();
+                stageCallback.accept("executed", Map.of(
+                        "message", "Step 2 · Tool error: " + e.getMessage(),
+                        "step", 2, "totalSteps", 3, "success", false));
+            }
+        } else if (intent.isQueryTool()) {
+            stageCallback.accept("executing", Map.of(
+                    "message", "Step 2 · Querying your account...",
+                    "step", 2, "totalSteps", 3, "action", intent.action()));
+            try {
+                log.info("Session {}: Step 2 — executing query tool {}...", sessionId, intent.action());
+                toolResult = executeToolDirectly(sessionId, intent);
+                log.info("Session {}: Query result: {}", sessionId, toolResult);
+                stageCallback.accept("executed", Map.of(
+                        "message", "Step 2 · Query complete.",
+                        "step", 2, "totalSteps", 3, "success", true));
+            } catch (Exception e) {
+                log.error("Session {}: Query tool execution failed", sessionId, e);
+                toolResult = "QUERY_ERROR: " + e.getMessage();
+                stageCallback.accept("executed", Map.of(
+                        "message", "Step 2 · Query error: " + e.getMessage(),
+                        "step", 2, "totalSteps", 3, "success", false));
+            }
+        }
+
+        // ── Step 3: Stream response ──
+        // For transactional results, skip the LLM and emit the tool result directly
+        // (it's already human-readable). This avoids a costly CPU-bound LLM round-trip.
+        stageCallback.accept("formatting", Map.of(
+                "message", "Step 3 · Generating response...",
+                "step", 3, "totalSteps", 3));
+
+        if (toolResult != null) {
+            log.info("Session {}: Step 3 — streaming tool result directly (skip LLM)", sessionId);
+            return new SyntheticTokenStream(toolResult);
+        }
+
+        // Non-transactional query: stream with full supervisor (tools as fallback)
         String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+        log.info("Session {}: Step 3 — non-transactional, streaming with full supervisor", sessionId);
         return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
     }
 
@@ -233,5 +444,145 @@ public class PaSSOrchestratorAgent {
 
     public TemporalMemoryService getTemporalMemoryService() {
         return temporalMemoryService;
+    }
+
+    // ── Two-fold helpers ──
+
+    /**
+     * Build a minimal context for the intent classifier (Step 1).
+     * Contains only registered users and the raw request — keeps token count low
+     * so the 3B model can reliably classify.
+     */
+    private String buildClassifierContext(String userId, String userIntent) {
+        Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Users: ");
+        for (var entry : registry.entrySet()) {
+            if (!entry.getKey().equals(userId)) {
+                sb.append(entry.getValue()).append(", ");
+            }
+        }
+        sb.append("\nRequest: ").append(userIntent);
+        return sb.toString();
+    }
+
+    /**
+     * Parse the classifier's structured text output into a {@link ParsedIntent}.
+     * Tolerant of extra whitespace and minor formatting variations.
+     */
+    private ParsedIntent parseClassification(String raw) {
+        String action = "QUERY";
+        String beneficiary = "none";
+        double amount = 0;
+        String channel = "auto";
+
+        for (String line : raw.split("\n")) {
+            line = line.trim();
+            if (line.toUpperCase().startsWith("ACTION:")) {
+                action = line.substring(7).trim().toUpperCase();
+            } else if (line.toUpperCase().startsWith("BENEFICIARY:")) {
+                beneficiary = line.substring(12).trim();
+            } else if (line.toUpperCase().startsWith("AMOUNT:")) {
+                try {
+                    amount = Double.parseDouble(line.substring(7).trim().replaceAll("[^0-9.]", ""));
+                } catch (NumberFormatException ignored) { }
+            } else if (line.toUpperCase().startsWith("CHANNEL:")) {
+                channel = line.substring(8).trim();
+            }
+        }
+
+        return new ParsedIntent(action, beneficiary, amount, channel);
+    }
+
+    /**
+     * Execute a LangChain4j @Tool via {@link ToolExecutor} based on the parsed intent.
+     * Builds a {@link ToolExecutionRequest} with JSON arguments and delegates to the
+     * registered {@link DefaultToolExecutor}, keeping all tool invocations within
+     * LangChain4j's execution pipeline.
+     */
+    private String executeToolDirectly(String sessionId, ParsedIntent intent) {
+        String toolName;
+        Map<String, Object> args = new LinkedHashMap<>();
+
+        switch (intent.action()) {
+            case "TRANSFER" -> {
+                toolName = "transferFunds";
+                args.put("beneficiary", intent.beneficiary());
+                if (!"auto".equalsIgnoreCase(intent.channel())) {
+                    args.put("targetBank", intent.channel());
+                }
+                args.put("amount", intent.amount());
+            }
+            case "RECEIVE" -> {
+                toolName = "receiveFunds";
+                args.put("amount", intent.amount());
+                if (!"auto".equalsIgnoreCase(intent.channel())) {
+                    args.put("channel", intent.channel());
+                }
+            }
+            case "MANDATE" -> {
+                toolName = "switchMandate";
+                args.put("bankName", intent.beneficiary());
+                args.put("mandateDetails", "Mandate switch requested");
+            }
+            case "QUERY_BALANCE" -> {
+                toolName = "checkBalance";
+            }
+            case "QUERY_TRANSACTIONS" -> {
+                toolName = "recentTransactions";
+            }
+            case "QUERY_SEARCH" -> {
+                toolName = "searchTransactions";
+                args.put("searchTerm", intent.beneficiary());
+            }
+            default -> { return null; }
+        }
+
+        ToolExecutor executor = toolExecutors.get(toolName);
+        if (executor == null) {
+            log.error("No LangChain4j ToolExecutor found for tool: {}", toolName);
+            return "TOOL_ERROR: Tool '" + toolName + "' is not registered.";
+        }
+
+        ToolExecutionRequest request = ToolExecutionRequest.builder()
+                .name(toolName)
+                .arguments(Json.toJson(args))
+                .build();
+
+        log.info("Session {}: Executing via LangChain4j ToolExecutor: {}({})", sessionId, toolName, request.arguments());
+        return executor.execute(request, sessionId);
+    }
+
+    /** Format a human-readable stage message from a classified intent. */
+    private static String formatClassifiedMessage(ParsedIntent intent) {
+        if (intent.isQueryTool()) {
+            return switch (intent.action()) {
+                case "QUERY_BALANCE"      -> "Step 1 · Checking your account balance";
+                case "QUERY_TRANSACTIONS" -> "Step 1 · Fetching your recent transactions";
+                case "QUERY_SEARCH"       -> "Step 1 · Searching transactions for " + intent.beneficiary();
+                default                   -> "Step 1 · Classified as: " + intent.action();
+            };
+        }
+        if (!intent.isTransactional() || intent.amount() <= 0) {
+            return "Step 1 · Classified as: " + intent.action();
+        }
+        String channel = "auto".equalsIgnoreCase(intent.channel()) ? "auto-select" : intent.channel();
+        return switch (intent.action()) {
+            case "TRANSFER" -> String.format("Step 1 · Transfer ₹%.0f to %s (%s)", intent.amount(), intent.beneficiary(), channel);
+            case "RECEIVE"  -> String.format("Step 1 · Receive ₹%.0f (%s)", intent.amount(), channel);
+            case "MANDATE"  -> "Step 1 · Mandate switch for " + intent.beneficiary();
+            default -> "Step 1 · " + intent.action();
+        };
+    }
+
+    /** Extract the payment channel from a tool result string like "SUCCESS: ₹100.00 transferred ... via UPI." */
+    private static String extractChannelFromResult(String result) {
+        if (result == null) return null;
+        String upper = result.toUpperCase();
+        // Check "via <channel>" pattern
+        for (String ch : new String[]{"UPI LITE", "UPI", "NEFT", "RTGS", "IMPS", "CHEQUE"}) {
+            if (upper.contains("VIA " + ch)) return ch;
+        }
+        return null;
     }
 }

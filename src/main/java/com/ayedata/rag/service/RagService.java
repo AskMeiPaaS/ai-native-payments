@@ -15,6 +15,8 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
+import com.ayedata.util.TextUtils;
+
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -68,7 +70,7 @@ public class RagService {
             Query query = Query.query(Criteria.where("_id").is(id));
             Update update = Update.update("title", title)
                     .set("content", content)
-                    .set("embedding", toDoubleList(vector))
+                    .set("embedding", TextUtils.toDoubleList(vector))
                     .set("updatedAt", new Date());
 
             memoryMongoTemplate.upsert(query, update, COLLECTION);
@@ -103,13 +105,13 @@ public class RagService {
             List<Document> candidates = vectorSearchKnowledge(queryVector, topK * 2);
 
             if (candidates.isEmpty()) {
-                log.debug("RAG: no candidates for query '{}'", truncate(query, 80));
+                log.debug("RAG: no candidates for query '{}'", TextUtils.truncateWithEllipsis(query, 80));
                 return "";
             }
 
             // Rerank
             List<TextSegment> segments = candidates.stream()
-                    .map(d -> TextSegment.from(nullToEmpty(d.getString("content"))))
+                    .map(d -> TextSegment.from(TextUtils.nullToEmpty(d.getString("content"))))
                     .collect(Collectors.toList());
 
             List<Double> scores = scoringModel.scoreAll(segments, query).content();
@@ -122,7 +124,7 @@ public class RagService {
                     .sorted((i, j) -> Double.compare(scores.get(j), scores.get(i)))
                     .limit(topK)
                     .filter(i -> scores.get(i) > 0.0)
-                    .map(i -> truncate(nullToEmpty(candidates.get(i).getString("content")), perChunkBudget))
+                    .map(i -> TextUtils.truncateWithEllipsis(TextUtils.nullToEmpty(candidates.get(i).getString("content")), perChunkBudget))
                     .filter(s -> !s.isBlank())
                     .collect(Collectors.toList());
 
@@ -130,7 +132,7 @@ public class RagService {
 
             // Final enforcement of total RAG budget
             if (result.length() > MAX_RAG_CONTEXT_CHARS) {
-                result = truncate(result, MAX_RAG_CONTEXT_CHARS);
+                result = TextUtils.truncateWithEllipsis(result, MAX_RAG_CONTEXT_CHARS);
             }
 
             log.info("RAG: {} chunk(s), {} chars (budget={}/chunk)", topChunks.size(), result.length(), perChunkBudget);
@@ -190,7 +192,7 @@ public class RagService {
         Document vectorSearchStage = new Document("$vectorSearch", new Document()
                 .append("index", "rag_knowledge_vector_index")
                 .append("path", "embedding")
-                .append("queryVector", toDoubleList(queryVector))
+                .append("queryVector", TextUtils.toDoubleList(queryVector))
                 .append("numCandidates", limit * 10)
                 .append("limit", limit));
 
@@ -210,18 +212,4 @@ public class RagService {
         }
     }
 
-    private static List<Double> toDoubleList(float[] floats) {
-        List<Double> list = new ArrayList<>(floats.length);
-        for (float f : floats) list.add((double) f);
-        return list;
-    }
-
-    private static String truncate(String s, int maxLen) {
-        if (s == null) return "";
-        return s.length() > maxLen ? s.substring(0, maxLen) + "…" : s;
-    }
-
-    private static String nullToEmpty(String s) {
-        return s == null ? "" : s;
-    }
 }

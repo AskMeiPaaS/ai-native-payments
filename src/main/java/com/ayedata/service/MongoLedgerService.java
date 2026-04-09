@@ -86,8 +86,8 @@ public class MongoLedgerService {
                             .recipient_account(recipientUserId)
                             .build())
                     .agentReasoningSnapshot(AgentReasoning.builder()
-                            .supervisorDecision("APPROVED")
-                            .contextSimilarityScore(0.98)
+                            .supervisorDecision("APPROVED")     // placeholder — FraudContextService not yet wired
+                            .contextSimilarityScore(0.98)        // placeholder — replace with real score once fraud service is active
                             .build())
                     .build();
             mongoTemplate.save(recipientRecord);
@@ -114,8 +114,8 @@ public class MongoLedgerService {
                         .recipient_account(beneficiary)
                         .build())
                 .agentReasoningSnapshot(AgentReasoning.builder()
-                        .supervisorDecision("APPROVED")
-                        .contextSimilarityScore(0.98)
+                        .supervisorDecision("APPROVED")     // placeholder — FraudContextService not yet wired
+                        .contextSimilarityScore(0.98)        // placeholder — replace with real score once fraud service is active
                         .build())
                 .build();
 
@@ -154,8 +154,8 @@ public class MongoLedgerService {
                         .merchantId("External Payer")
                         .build())
                 .agentReasoningSnapshot(AgentReasoning.builder()
-                        .supervisorDecision("APPROVED")
-                        .contextSimilarityScore(0.98)
+                        .supervisorDecision("APPROVED")     // placeholder — FraudContextService not yet wired
+                        .contextSimilarityScore(0.98)        // placeholder — replace with real score once fraud service is active
                         .build())
                 .build();
 
@@ -196,7 +196,7 @@ public class MongoLedgerService {
                         .recipient_account(bankName)
                         .build())
                 .agentReasoningSnapshot(AgentReasoning.builder()
-                        .supervisorDecision("MANDATE_SWITCH_APPROVED")
+                        .supervisorDecision("MANDATE_SWITCH_APPROVED")  // placeholder
                         .contextSimilarityScore(0.0)
                         .build())
                 .build();

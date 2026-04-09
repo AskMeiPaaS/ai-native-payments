@@ -8,25 +8,12 @@ import org.springframework.stereotype.Service;
 public class FraudContextService {
     private static final Logger log = LoggerFactory.getLogger(FraudContextService.class);
 
-    // Note: embeddingModel and scoringModel are not currently used in this service.
-    // Future implementation will integrate embedding and scoring capabilities.
-
     public FraudContextService() {
     }
 
     public void evaluateTelemetryContext(String telemetryVector, String userIntent) {
         log.info("Processing continuous authentication telemetry...");
-
-        // 1. Embed the telemetry vector
-        // dev.langchain4j.data.embedding.Embedding embedding =
-        // embeddingModel.embed(telemetryVector).content();
-
-        // 2. Query MongoDB Atlas Local Vector Search
-        // List<TextSegment> segments = ... (Execute Atlas Search)
-
-        // 3. Rerank the retrieved context for higher fidelity against the user intent
-        // Double score = scoringModel.score(userIntent, retrievedSegment).content();
-
+        // TODO: integrate embedding model + Atlas Vector Search + reranking
         log.info("Context evaluated successfully using abstracted AI engine.");
     }
 
@@ -46,15 +33,8 @@ public class FraudContextService {
             return 0.0;
         }
 
-        // In a real implementation, this would:
-        // 1. Query behavioral profile from MongoDB for the userId
-        // 2. Embed the session telemetry
-        // 3. Calculate cosine similarity
-        // 4. Return normalized score (0.0 = no match, 1.0 = perfect match)
-
+        // TODO: query behavioral profile, embed session telemetry, compute cosine similarity
         log.debug("Retrieved behavioral similarity for session: {}, userId: {}", sessionId, userId);
-
-        // For now, return 0.0 (fail-safe)
         return 0.0;
     }
 }

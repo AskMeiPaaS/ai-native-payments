@@ -16,6 +16,7 @@ interface Message {
   status?: 'sending' | 'sent' | 'delivered' | 'failed'; // Message delivery status
   meta?: string;
   channel?: string; // LLM+RAG selected payment channel (e.g. "UPI", "NEFT", "RTGS")
+  stageChannel?: string; // Channel detected during two-fold orchestration stages
 }
 
 /** Canonical channel names the LLM or tool response may mention. */
@@ -88,7 +89,6 @@ interface AccountSummary {
 }
 
 interface AgentChatDashboardProps {
-  backendUrl?: string; // kept for backwards compat but ignored; Next.js rewrites handle routing
   userId?: string;
   userProfile?: {
     userId: string;
@@ -242,7 +242,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
 
     // Check health every 10 seconds; poll balance every 8 seconds to keep "Live balance" accurate
     const healthInterval = setInterval(checkHealth, 10000);
-    const balanceInterval = setInterval(() => { void refreshAccountSummary(); }, 8000);
+    const balanceInterval = setInterval(() => { void refreshAccountSummary(); }, 5000);
     return () => {
       clearInterval(healthInterval);
       clearInterval(balanceInterval);
@@ -397,6 +397,51 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   continue;
                 }
 
+                // Stage events from two-fold orchestration pipeline
+                if (currentEventName === 'stage' && jsonData.stage) {
+                  const stageName: string = jsonData.stage;
+                  const stageMsg: string = jsonData.message || stageName;
+                  const step: number | undefined = jsonData.step;
+                  const totalSteps: number | undefined = jsonData.totalSteps;
+
+                  // Map stage names to sidebar activity tones
+                  const toneLookup: Record<string, 'info' | 'success' | 'warn' | 'error'> = {
+                    classifying: 'info',
+                    classified: 'info',
+                    executing: 'warn',
+                    executed: jsonData.success === false ? 'error' : 'success',
+                    formatting: 'info',
+                    fallback: 'warn',
+                  };
+
+                  // Progress label: "Step 1/3 · ..."
+                  const progressPrefix = step && totalSteps ? `[${step}/${totalSteps}] ` : '';
+                  appendActivity(progressPrefix + stageName, stageMsg, toneLookup[stageName] || 'info');
+
+                  // Update wait message with current stage
+                  const stageIcon = stageName === 'executing' ? '⚡' : stageName === 'formatting' ? '✍️' : '🔍';
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === waitMsgId
+                        ? { ...msg, content: `${stageIcon} ${stageMsg}` }
+                        : msg
+                    )
+                  );
+
+                  // If channel was detected during classification or execution, remember it
+                  // so the final chat bubble gets the channel badge even before streaming starts.
+                  if (jsonData.channel && jsonData.channel !== 'auto' && jsonData.channel !== 'auto-select') {
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === waitMsgId
+                          ? { ...msg, stageChannel: jsonData.channel }
+                          : msg
+                      )
+                    );
+                  }
+                  continue;
+                }
+
                 if (jsonData.message && isFirstEvent) {
                   console.log('[First Event] Initial message:', jsonData.message);
                   isFirstEvent = false;
@@ -435,7 +480,9 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           : msg
                       );
                     } else {
-                      // Create new streaming message (first chunk)
+                      // Create new streaming message (first chunk) — carry over stageChannel
+                      const waitMsg2 = prev.find((m) => m.id === waitMsgId);
+                      const inheritedChannel = waitMsg2?.stageChannel;
                       return [
                         ...prev.filter((m) => m.id !== waitMsgId),
                         {
@@ -443,6 +490,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           role: 'agent' as const,
                           content: fullResponse,
                           timestamp: new Date(),
+                          ...(inheritedChannel ? { channel: inheritedChannel } : {}),
                         },
                       ];
                     }
@@ -468,18 +516,21 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       elapsedMs:    jsonData.elapsedMs,
                     });
                   }
-                  setMessages((prev) =>
-                    prev.map((msg) =>
+                  setMessages((prev) => {
+                    // Use channel from response text, or fall back to what was detected in a stage event
+                    const existingMsg = prev.find((m) => m.id === agentMessageId);
+                    const finalChannel = detectedChannel || existingMsg?.channel;
+                    return prev.map((msg) =>
                       msg.id === agentMessageId
                         ? {
                             ...msg,
                             content: fullResponse,
                             meta: jsonData.message || `⏱️ Response time: ${elapsedSecs}s`,
-                            ...(detectedChannel ? { channel: detectedChannel } : {}),
+                            ...(finalChannel ? { channel: finalChannel } : {}),
                           }
                         : msg
-                    )
-                  );
+                    );
+                  });
                   // Refresh immediately; also schedule a follow-up in 2 s in case the
                   // MongoDB write isn't visible yet at the moment of the first read.
                   void refreshAccountSummary(true);
@@ -642,12 +693,12 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   >
                     <div className={`message-bubble message-bubble--${msg.role}`}>
                       <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'break-word' }}>{msg.content}</div>
-                      {msg.role === 'agent' && (msg.channel || msg.meta) && (
+                      {msg.role === 'agent' && (msg.channel || msg.stageChannel || msg.meta) && (
                         <div className="bubble-footer">
-                          {msg.channel && (
-                            <div className="channel-badge" data-ch={msg.channel}>
+                          {(msg.channel || msg.stageChannel) && (
+                            <div className="channel-badge" data-ch={msg.channel || msg.stageChannel}>
                               <span className="channel-badge__dot" />
-                              <span className="channel-badge__label">{msg.channel}</span>
+                              <span className="channel-badge__label">{msg.channel || msg.stageChannel}</span>
                               <span className="channel-badge__suffix">via RAG+LLM</span>
                             </div>
                           )}
@@ -656,7 +707,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           )}
                         </div>
                       )}
-                      {msg.role === 'agent' && msg.content && !msg.content.startsWith('⏳') && (
+                      {msg.role === 'agent' && msg.content && !msg.content.startsWith('⏳') && !msg.content.startsWith('🔍') && !msg.content.startsWith('⚡') && !msg.content.startsWith('✍️') && (
                         <HitlAppealButton sessionId={sessionId} />
                       )}
                     </div>

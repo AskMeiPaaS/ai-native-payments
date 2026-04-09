@@ -154,7 +154,8 @@ public class AccountBalanceService {
             FinancialData financialData = latestTransfer.getFinancialData();
             dashboard.put("lastTransferAmount", financialData != null ? roundCurrency(financialData.getAmount()) : 0.0);
             dashboard.put("lastTransferStatus", latestTransfer.getStatus());
-            dashboard.put("lastPaymentMethod", latestTransfer.getPaymentMethod() != null ? latestTransfer.getPaymentMethod() : "—");
+            String rawLastMethod = latestTransfer.getPaymentMethod();
+            dashboard.put("lastPaymentMethod", isKnownChannel(rawLastMethod) ? rawLastMethod : "—");
             String instrType = latestTransfer.getInstructionType();
             dashboard.put("lastTransactionType", (instrType != null && instrType.contains("RECEIVE")) ? "CREDIT" : "DEBIT");
         }

@@ -101,16 +101,30 @@ interface AgentChatDashboardProps {
   onLogout?: () => void;
 }
 
-export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashboardProps = {}) {
+export default function AgentChatDashboard({ userId, userProfile, onLogout }: AgentChatDashboardProps = {}) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
   const [mongoConnected, setMongoConnected] = useState(false);
   const [activeTab, setActiveTab] = useState<'chat' | 'operator'>('chat');
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
-  const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(null);
+  const [accountSummary, setAccountSummary] = useState<AccountSummary | null>(
+    userProfile
+      ? {
+          userId: userProfile.userId,
+          displayName: userProfile.displayName,
+          email: userProfile.email,
+          phone: userProfile.phone,
+          currentBalance: userProfile.currentBalance,
+          availableBalance: userProfile.currentBalance,
+          currency: userProfile.currency,
+          lastTransferAmount: 0,
+          lastTransferStatus: 'NO_TRANSFERS_YET',
+        }
+      : null
+  );
   const [accountError, setAccountError] = useState<string | null>(null);
-  const [isAccountLoading, setIsAccountLoading] = useState(true);
+  const [isAccountLoading, setIsAccountLoading] = useState(!userProfile);
   const [lastTokenStats, setLastTokenStats] = useState<TokenStats | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -226,9 +240,13 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
     checkHealth();
     void refreshAccountSummary();
 
-    // Check health every 10 seconds
+    // Check health every 10 seconds; poll balance every 8 seconds to keep "Live balance" accurate
     const healthInterval = setInterval(checkHealth, 10000);
-    return () => clearInterval(healthInterval);
+    const balanceInterval = setInterval(() => { void refreshAccountSummary(); }, 8000);
+    return () => {
+      clearInterval(healthInterval);
+      clearInterval(balanceInterval);
+    };
   }, [checkHealth, effectiveUserId, loadChatHistory, refreshAccountSummary, resetActivityLog]);
 
   // Auto-scroll to bottom
@@ -462,7 +480,10 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
                         : msg
                     )
                   );
+                  // Refresh immediately; also schedule a follow-up in 2 s in case the
+                  // MongoDB write isn't visible yet at the moment of the first read.
                   void refreshAccountSummary(true);
+                  setTimeout(() => void refreshAccountSummary(true), 2000);
                 }
               } catch (e) {
                 // SSE parsing error, log and continue
@@ -507,6 +528,9 @@ export default function AgentChatDashboard({ userId, onLogout }: AgentChatDashbo
         if (timeoutId) {
           clearTimeout(timeoutId);
         }
+        // Always do a final balance pull when the exchange ends, regardless of
+        // whether the SSE complete event was parsed (handles error/abort paths).
+        void refreshAccountSummary(true);
         setIsLoading(false);
       }
     },

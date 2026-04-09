@@ -397,6 +397,54 @@ This installs the binary under `src/main/resources/qe-native/mongo_crypt_v1.so`.
 
 ---
 
+## Sample Test Queries
+
+Three representative queries that exercise the **programmatic filter builder** and **LLM intent classifier**:
+
+### 1. Aggregate debits and credits
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/orchestrate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "sessionId": "test-pf1",
+    "userId": "user001",
+    "userIntent": "tell me total value of debits and credits"
+  }'
+```
+
+**Expected:** Classifier returns `QUERY_TRANSACTIONS` with an empty filter `{}`. All transactions are fetched and the response includes a debit/credit/net summary (e.g. *Debits: 5 × ₹20,650.00 · Credits: 2 × ₹10,020.00 · Net: ₹−10,630.00*).
+
+### 2. Filtered query — UPI debits
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/orchestrate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "sessionId": "test-pf2",
+    "userId": "user001",
+    "userIntent": "show my UPI debits"
+  }'
+```
+
+**Expected:** Classifier returns `QUERY_TRANSACTIONS`. The programmatic filter builder produces `{"instructionType":"PASS_MONEY_TRANSFER","paymentMethod":"UPI"}` — only UPI debit transactions are returned.
+
+### 3. Counterparty search
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/agent/orchestrate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "sessionId": "test-pf3",
+    "userId": "user001",
+    "userIntent": "how much I owe to Priya"
+  }'
+```
+
+**Expected:** Classifier returns `QUERY_SEARCH` with `BENEFICIARY: Priya Sharma`. All transactions with the user are fetched and filtered client-side by counterparty name.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Fix |

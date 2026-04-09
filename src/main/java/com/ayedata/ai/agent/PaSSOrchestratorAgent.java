@@ -127,29 +127,27 @@ public class PaSSOrchestratorAgent {
     // ── Two-fold orchestration: Step 1 classifier, Step 3 formatter ──
 
     private static final String CLASSIFIER_PROMPT = """
-            Classify the payment request. Reply with these lines, nothing else:
+            Classify the payment request. Reply with EXACTLY these four lines, nothing else:
             ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
             BENEFICIARY: person name or none
             AMOUNT: number or 0
             CHANNEL: channel name or auto
-            QUERY: MongoDB filter JSON (only for QUERY_TRANSACTIONS or QUERY_SEARCH, omit for others)
 
-            QUERY rules:
-            - userId is added automatically — NEVER include it.
-            - Allowed fields: instructionType, paymentMethod, status, createdAt
-            - instructionType values: "PASS_MONEY_RECEIVE" (credit/received) or "PASS_MONEY_TRANSFER" (debit/sent)
-            - paymentMethod values: "UPI", "UPI LITE", "NEFT", "RTGS", "IMPS", "CHEQUE"
-            - For date ranges use: {"createdAt": {"$gte": "7d"}} for last 7 days
-            - Use {} for no filter
+            Rules:
+            - When a person's name appears in a query, use QUERY_SEARCH with BENEFICIARY set to that person.
+            - Use QUERY_TRANSACTIONS for listing/filtering transactions without a specific person.
+            - Use QUERY_BALANCE only for balance inquiries with no person mentioned.
 
             Examples:
             - "what is my balance" → ACTION: QUERY_BALANCE
-            - "show my transactions" → ACTION: QUERY_TRANSACTIONS, QUERY: {}
-            - "show only credits" → ACTION: QUERY_TRANSACTIONS, QUERY: {"instructionType": "PASS_MONEY_RECEIVE"}
-            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, QUERY: {"instructionType": "PASS_MONEY_TRANSFER", "paymentMethod": "UPI"}
-            - "did I pay Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, QUERY: {}
-            - "credits from Arjun" → ACTION: QUERY_SEARCH, BENEFICIARY: Arjun, QUERY: {"instructionType": "PASS_MONEY_RECEIVE"}
-            - "transactions this week" → ACTION: QUERY_TRANSACTIONS, QUERY: {"createdAt": {"$gte": "7d"}}
+            - "show my transactions" → ACTION: QUERY_TRANSACTIONS
+            - "show only credits" → ACTION: QUERY_TRANSACTIONS
+            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS
+            - "total debits and credits" → ACTION: QUERY_TRANSACTIONS
+            - "transactions this week" → ACTION: QUERY_TRANSACTIONS
+            - "did I pay Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya
+            - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya
+            - "credits from Arjun" → ACTION: QUERY_SEARCH, BENEFICIARY: Arjun
             """;
 
     private static final String FORMATTER_PROMPT = """
@@ -166,7 +164,7 @@ public class PaSSOrchestratorAgent {
         TokenStream format(@UserMessage String contextWithResult);
     }
 
-    record ParsedIntent(String action, String beneficiary, double amount, String channel, String queryJson) {
+    record ParsedIntent(String action, String beneficiary, double amount, String channel) {
         boolean isTransfer()       { return "TRANSFER".equals(action); }
         boolean isReceive()        { return "RECEIVE".equals(action); }
         boolean isMandate()        { return "MANDATE".equals(action); }
@@ -175,7 +173,6 @@ public class PaSSOrchestratorAgent {
         boolean isQuerySearch()    { return "QUERY_SEARCH".equals(action); }
         boolean isTransactional()  { return isTransfer() || isReceive() || isMandate(); }
         boolean isQueryTool()      { return isQueryBalance() || isQueryTxns() || isQuerySearch(); }
-        boolean hasMongoQuery()    { return queryJson != null && !queryJson.isBlank(); }
     }
 
     /** Wraps classifier raw text output together with Step 1 token usage. */
@@ -316,7 +313,7 @@ public class PaSSOrchestratorAgent {
             String toolResult = null;
             if (intent.isTransactional() && intent.amount() > 0) {
                 try {
-                    toolResult = executeToolDirectly(sessionId, intent);
+                    toolResult = executeToolDirectly(sessionId, intent, userIntent);
                     log.info("Session {}: Tool result: {}", sessionId, toolResult);
                 } catch (Exception e) {
                     log.error("Session {}: Tool execution failed", sessionId, e);
@@ -324,7 +321,7 @@ public class PaSSOrchestratorAgent {
                 }
             } else if (intent.isQueryTool()) {
                 try {
-                    toolResult = executeToolDirectly(sessionId, intent);
+                    toolResult = executeToolDirectly(sessionId, intent, userIntent);
                     log.info("Session {}: Query result: {}", sessionId, toolResult);
                 } catch (Exception e) {
                     log.error("Session {}: Query tool execution failed", sessionId, e);
@@ -434,7 +431,7 @@ public class PaSSOrchestratorAgent {
             long step2Start = System.currentTimeMillis();
             try {
                 log.info("Session {}: Step 2 — executing {} tool directly...", sessionId, intent.action());
-                toolResult = executeToolDirectly(sessionId, intent);
+                toolResult = executeToolDirectly(sessionId, intent, userIntent);
                 long step2ElapsedMs = System.currentTimeMillis() - step2Start;
                 log.info("Session {}: Tool result: {} ({}ms)", sessionId, toolResult, step2ElapsedMs);
 
@@ -468,7 +465,7 @@ public class PaSSOrchestratorAgent {
             long step2Start = System.currentTimeMillis();
             try {
                 log.info("Session {}: Step 2 — executing query tool {}...", sessionId, intent.action());
-                toolResult = executeToolDirectly(sessionId, intent);
+                toolResult = executeToolDirectly(sessionId, intent, userIntent);
                 long step2ElapsedMs = System.currentTimeMillis() - step2Start;
                 log.info("Session {}: Query result: {} ({}ms)", sessionId, toolResult, step2ElapsedMs);
                 stageCallback.accept("executed", Map.of(
@@ -618,13 +615,10 @@ public class PaSSOrchestratorAgent {
         String beneficiary = "none";
         double amount = 0;
         String channel = "auto";
-        String queryJson = null;
 
-        // Normalize: the 3B model sometimes emits comma-separated key: value
-        // pairs on a single line instead of separate lines. Split on commas
-        // that precede one of the known keywords (lookahead avoids splitting
-        // inside JSON values like {"instructionType":"...", "paymentMethod":"..."}).
-        String normalized = raw.replaceAll("(?i),\\s*(?=(?:ACTION|BENEFICIARY|AMOUNT|CHANNEL|QUERY):)", "\n");
+        // Normalize: models sometimes emit comma-separated key: value pairs
+        // on a single line instead of separate lines.
+        String normalized = raw.replaceAll("(?i),\\s*(?=(?:ACTION|BENEFICIARY|AMOUNT|CHANNEL):)", "\n");
 
         for (String line : normalized.split("\n")) {
             line = line.trim();
@@ -638,12 +632,80 @@ public class PaSSOrchestratorAgent {
                 } catch (NumberFormatException ignored) { }
             } else if (line.toUpperCase().startsWith("CHANNEL:")) {
                 channel = line.substring(8).trim();
-            } else if (line.toUpperCase().startsWith("QUERY:")) {
-                queryJson = line.substring(6).trim();
             }
         }
 
-        return new ParsedIntent(action, beneficiary, amount, channel, queryJson);
+        return new ParsedIntent(action, beneficiary, amount, channel);
+    }
+
+    /**
+     * Build a MongoDB filter JSON string from the user's natural language query.
+     * This is purely programmatic — no LLM involved — so it is deterministic and
+     * cannot produce malformed output. The classifier only decides ACTION; this
+     * method handles the "how to filter" part.
+     */
+    private static String buildQueryFilter(String userIntent) {
+        if (userIntent == null || userIntent.isBlank()) return "{}";
+        String lower = userIntent.toLowerCase();
+
+        // Detect transaction type keywords
+        boolean wantsCredit = lower.matches(".*(\\bcredit|\\breceive|\\bincoming|\\binward).*");
+        boolean wantsDebit  = lower.matches(".*(\\bdebit|\\bsent|\\bpaid|\\bpay\\b|\\boutgoing|\\boutward|\\btransfer).*");
+
+        // If both or neither are mentioned → no type filter (show all with summary)
+        String typeFilter = null;
+        if (wantsCredit && !wantsDebit) {
+            typeFilter = "PASS_MONEY_RECEIVE";
+        } else if (wantsDebit && !wantsCredit) {
+            typeFilter = "PASS_MONEY_TRANSFER";
+        }
+
+        // Detect payment method keywords
+        String methodFilter = null;
+        if (lower.contains("upi lite")) {
+            methodFilter = "UPI LITE";
+        } else if (lower.contains("upi")) {
+            methodFilter = "UPI";
+        } else if (lower.contains("neft")) {
+            methodFilter = "NEFT";
+        } else if (lower.contains("rtgs")) {
+            methodFilter = "RTGS";
+        } else if (lower.contains("imps")) {
+            methodFilter = "IMPS";
+        } else if (lower.contains("cheque") || lower.contains("check")) {
+            methodFilter = "CHEQUE";
+        }
+
+        // Detect time range keywords
+        String dateRange = null;
+        if (lower.matches(".*(\\btoday\\b|\\blast 1 day\\b).*")) {
+            dateRange = "1d";
+        } else if (lower.matches(".*(\\byesterday\\b|\\blast 2 day).*")) {
+            dateRange = "2d";
+        } else if (lower.matches(".*(\\bthis week\\b|\\blast 7 day|\\bweek\\b).*")) {
+            dateRange = "7d";
+        } else if (lower.matches(".*(\\bthis month\\b|\\blast 30 day|\\bmonth\\b).*")) {
+            dateRange = "30d";
+        }
+
+        // Build JSON filter
+        StringBuilder json = new StringBuilder("{");
+        boolean first = true;
+        if (typeFilter != null) {
+            json.append("\"instructionType\":\"").append(typeFilter).append("\"");
+            first = false;
+        }
+        if (methodFilter != null) {
+            if (!first) json.append(",");
+            json.append("\"paymentMethod\":\"").append(methodFilter).append("\"");
+            first = false;
+        }
+        if (dateRange != null) {
+            if (!first) json.append(",");
+            json.append("\"createdAt\":{\"$gte\":\"").append(dateRange).append("\"}");
+        }
+        json.append("}");
+        return json.toString();
     }
 
     /**
@@ -652,7 +714,7 @@ public class PaSSOrchestratorAgent {
      * registered {@link DefaultToolExecutor}, keeping all tool invocations within
      * LangChain4j's execution pipeline.
      */
-    private String executeToolDirectly(String sessionId, ParsedIntent intent) {
+    private String executeToolDirectly(String sessionId, ParsedIntent intent, String userIntent) {
         String toolName;
         Map<String, Object> args = new LinkedHashMap<>();
 
@@ -681,13 +743,13 @@ public class PaSSOrchestratorAgent {
                 toolName = "checkBalance";
             }
             case "QUERY_TRANSACTIONS", "QUERY_SEARCH" -> {
-                // Delegate to LedgerTools.executeMongoQuery() with the LLM-generated filter
                 String searchTerm = intent.isQuerySearch() ? intent.beneficiary() : null;
                 int limit = 10;
+                String filterJson = buildQueryFilter(userIntent);
                 log.info("Session {}: Executing MongoDB query: filter={} search='{}'",
-                        sessionId, intent.queryJson(), searchTerm);
+                        sessionId, filterJson, searchTerm);
                 String resolvedUserId = ledgerTools.resolveUserId(sessionId);
-                return ledgerTools.executeMongoQuery(resolvedUserId, intent.queryJson(), searchTerm, limit);
+                return ledgerTools.executeMongoQuery(resolvedUserId, filterJson, searchTerm, limit);
             }
             default -> { return null; }
         }

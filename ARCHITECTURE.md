@@ -7,7 +7,7 @@ A comprehensive guide to the AI-native financial orchestration platform built fo
 ## 📑 Table of Contents
 
 1. **Modular Package Layout** - Responsibility-based module map
-2. **Core AI-Native Components** - Multi-agent orchestration, LangChain4j, tools
+2. **Core AI-Native Components** - Multi-agent orchestration, LangChain4j, tools, Stage 2 tool execution verification
 3. **Container & Microservices** - Docker topology, network config, service configuration
 4. **Data Flows, Streaming & Audit** - transaction processing, SSE lifecycle, session correlation
 5. **Business Rules** - balance rules, channel routing, risk profiles, regulatory constraints
@@ -156,6 +156,70 @@ LangChain4j manages the platform's "brain":
 - **Long-Term Memory:** Embedding models turn behavioral data into vectors stored in MongoDB
 - **Contextual Retrieval:** Context Agent uses MongoDB Vector Search for behavioral validation
 - **Short-Term Memory:** Time-Series collection stores real-time interaction data
+
+#### E. Stage 2 — Tool Execution Verification
+
+The three-stage orchestration pipeline (`Stage 1: Classify → Stage 2: Execute → Stage 3: Format`) keeps all tool invocations in Stage 2. The classifier (Stage 1) only outputs intent metadata — it never generates code, queries, or tool calls. Stage 2 is purely deterministic Java execution with no LLM involvement.
+
+**Tool Registration (Boot-up)**
+
+At `@PostConstruct`, every `@Tool`-annotated method in `LedgerTools` is registered as a `DefaultToolExecutor`:
+
+```java
+for (Method method : ledgerTools.getClass().getDeclaredMethods()) {
+    if (method.isAnnotationPresent(Tool.class)) {
+        toolExecutors.put(method.getName(), new DefaultToolExecutor(ledgerTools, method));
+    }
+}
+```
+
+Registered executors: `transferFunds`, `receiveFunds`, `switchMandate`, `checkBalance`, `recentTransactions`, `searchTransactions`.
+
+**Transactional Path** (`transferFunds`, `receiveFunds`, `switchMandate`)
+
+Routed when `intent.isTransactional() && intent.amount() > 0`:
+
+```
+orchestrateSwitch / orchestrateSwitchStreaming
+  └─ executeToolDirectly(sessionId, intent, userIntent)
+       ├─ TRANSFER  → toolExecutors.get("transferFunds")
+       ├─ RECEIVE   → toolExecutors.get("receiveFunds")
+       └─ MANDATE   → toolExecutors.get("switchMandate")
+            └─ DefaultToolExecutor.execute(ToolExecutionRequest, sessionId)
+                 └─ @Tool method in LedgerTools
+                      └─ MongoLedgerService (ACID commit)
+```
+
+**Query Path** (`QUERY_BALANCE`, `QUERY_TRANSACTIONS`, `QUERY_SEARCH`)
+
+Routed when `intent.isQueryTool()`:
+
+```
+orchestrateSwitch / orchestrateSwitchStreaming
+  └─ executeToolDirectly(sessionId, intent, userIntent)
+       ├─ QUERY_BALANCE
+       │    └─ toolExecutors.get("checkBalance").execute(...)
+       │         └─ LedgerTools.checkBalance(memoryId)
+       │              └─ Returns "BALANCE: {name} has ₹{balance} INR"
+       │
+       └─ QUERY_TRANSACTIONS / QUERY_SEARCH
+            ├─ buildQueryFilter(userIntent)      ← deterministic keyword matching
+            │    ├─ Type:   credit/receive → PASS_MONEY_RECEIVE
+            │    │          debit/sent/paid → PASS_MONEY_TRANSFER
+            │    ├─ Method: upi, neft, rtgs, imps, cheque
+            │    └─ Time:   today→1d, week→7d, month→30d
+            ├─ ledgerTools.resolveUserId(sessionId)
+            └─ ledgerTools.executeMongoQuery(userId, filterJson, searchTerm, limit)
+                 ├─ Whitelist: instructionType, paymentMethod, status
+                 ├─ Always injects userId (security)
+                 └─ Returns formatted transactions + debit/credit/net summary
+```
+
+**Fallback Path** (general queries)
+
+When intent is neither transactional nor a query tool, the request falls through to the `Supervisor` / `StreamingSupervisor` AiServices proxy which retains full LangChain4j tool-calling capability as a safety net.
+
+**Key Design Constraint:** The LLM (Stage 1) produces only four fields — `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL`. All MongoDB filter logic is handled by the programmatic `buildQueryFilter()` method, ensuring the classifier is never a bottleneck for query accuracy.
 
 ---
 

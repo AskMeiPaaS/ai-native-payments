@@ -44,6 +44,15 @@ interface UserBalanceDashboardProps {
   error?: string | null;
 }
 
+const VALID_CHANNELS = new Set([
+  'UPI', 'UPI LITE', 'UPILITE', 'UPI_LITE',
+  'NEFT', 'RTGS', 'IMPS', 'CHEQUE', 'CHECK', 'CHQ',
+  'NET BANKING', 'NETBANKING', 'NET_BANKING',
+]);
+
+const isKnownChannel = (ch?: string | null): ch is string =>
+  ch != null && VALID_CHANNELS.has(ch.trim().toUpperCase());
+
 const formatTimestamp = (ts?: string) => {
   if (!ts) return null;
   const d = new Date(ts);
@@ -175,7 +184,6 @@ export default function UserBalanceDashboard({
                     {transfer.sourceAccount || transfer.merchantId || 'Account'}
                     {' → '}
                     {transfer.targetAccount || transfer.merchantId || 'Account'}
-                    {transfer.targetBank ? ` · ${transfer.targetBank}` : ''}
                   </div>
                   <div className="txn-id">{transfer.id}</div>
                 </div>
@@ -186,7 +194,9 @@ export default function UserBalanceDashboard({
                   </div>
                   <div className="txn-status">
                     {transfer.status}
-                    {transfer.channel && <span className="txn-channel">{transfer.channel}</span>}
+                    {isKnownChannel(transfer.channel) && (
+                      <span className="txn-channel">{transfer.channel.toUpperCase()}</span>
+                    )}
                   </div>
                   {formatTimestamp(transfer.createdAt) && (
                     <div className="txn-timestamp">{formatTimestamp(transfer.createdAt)}</div>

@@ -3,6 +3,7 @@ package com.ayedata.service;
 import com.ayedata.domain.FinancialData;
 import com.ayedata.domain.TransactionRecord;
 import com.ayedata.domain.UserProfile;
+import com.ayedata.init.UserProfileInitializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -159,7 +160,7 @@ public class AccountBalanceService {
         }
 
         List<Map<String, Object>> recentTransferSummaries = recentTransfers.stream()
-                .map(this::toTransferSummary)
+                .map(txn -> toTransferSummary(txn, profile))
                 .toList();
         dashboard.put("recentTransfers", recentTransferSummaries);
 
@@ -206,13 +207,16 @@ public class AccountBalanceService {
         return sb.toString();
     }
 
-    private Map<String, Object> toTransferSummary(TransactionRecord transactionRecord) {
+    private Map<String, Object> toTransferSummary(TransactionRecord transactionRecord, UserProfile profile) {
         Map<String, Object> transfer = new LinkedHashMap<>();
         transfer.put("id", transactionRecord.getId());
         transfer.put("status", transactionRecord.getStatus());
         transfer.put("createdAt", transactionRecord.getCreatedAt());
         transfer.put("resultingBalance", transactionRecord.getResultingBalance());
-        transfer.put("channel", transactionRecord.getPaymentMethod());
+
+        // Only store recognised channel names — guard against old records that stored a userId here
+        String rawChannel = transactionRecord.getPaymentMethod();
+        transfer.put("channel", isKnownChannel(rawChannel) ? rawChannel : null);
 
         String instrType = transactionRecord.getInstructionType();
         String transactionType = (instrType != null && instrType.contains("RECEIVE")) ? "CREDIT" : "DEBIT";
@@ -222,20 +226,54 @@ public class AccountBalanceService {
         if (financialData != null) {
             transfer.put("amount", roundCurrency(financialData.getAmount()));
             transfer.put("merchantId", financialData.getMerchantId());
-            transfer.put("targetBank", financialData.getRecipientBank());
-            transfer.put("sourceAccount", financialData.getDonor_account() != null
-                    ? financialData.getDonor_account() : transactionRecord.getUserId());
-            transfer.put("targetAccount", financialData.getRecipient_account() != null
-                    ? financialData.getRecipient_account() : financialData.getMerchantId());
+
+            // recipientBank stores the payment channel; only expose it when it is a real channel name
+            String rawRecipientBank = financialData.getRecipientBank();
+            transfer.put("targetBank", isKnownChannel(rawRecipientBank) ? rawRecipientBank : null);
+
+            // Resolve userId → display name so the UI shows "Arjun Kumar" not "user001"
+            String rawSource = financialData.getDonor_account() != null
+                    ? financialData.getDonor_account() : transactionRecord.getUserId();
+            transfer.put("sourceAccount", resolveDisplayName(rawSource, profile));
+
+            String rawTarget = financialData.getRecipient_account() != null
+                    ? financialData.getRecipient_account() : financialData.getMerchantId();
+            transfer.put("targetAccount", resolveDisplayName(rawTarget, profile));
         } else {
             transfer.put("amount", 0.0);
             transfer.put("merchantId", "-");
-            transfer.put("targetBank", "-");
-            transfer.put("sourceAccount", "-");
+            transfer.put("targetBank", null);
+            transfer.put("sourceAccount", resolveDisplayName(transactionRecord.getUserId(), profile));
             transfer.put("targetAccount", "-");
         }
 
         return transfer;
+    }
+
+    /**
+     * Resolves a raw field value (which may be a userId, display name, or free text) to a
+     * human-readable display name.  Checks the profile's own userId first, then the static
+     * demo-user registry.
+     */
+    private String resolveDisplayName(String rawValue, UserProfile profile) {
+        if (rawValue == null || rawValue.isBlank()) return "-";
+        // Current user
+        if (profile != null && rawValue.equalsIgnoreCase(profile.getId())) {
+            return profile.getDisplayName() != null ? profile.getDisplayName() : rawValue;
+        }
+        // Other registered demo users
+        String displayName = UserProfileInitializer.getDemoUserRegistry().get(rawValue);
+        return displayName != null ? displayName : rawValue;
+    }
+
+    private static final java.util.Set<String> KNOWN_CHANNELS = java.util.Set.of(
+            "UPI", "UPI LITE", "UPILITE", "UPI_LITE",
+            "NEFT", "RTGS", "IMPS", "CHEQUE", "CHECK", "CHQ",
+            "NET BANKING", "NETBANKING", "NET_BANKING"
+    );
+
+    private boolean isKnownChannel(String value) {
+        return value != null && KNOWN_CHANNELS.contains(value.trim().toUpperCase());
     }
 
     private double roundCurrency(double amount) {

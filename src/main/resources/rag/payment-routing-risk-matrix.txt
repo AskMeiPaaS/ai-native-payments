@@ -142,7 +142,7 @@ Rule 4 — Speed Priority:
   Urgent + ₹2L+: RTGS (real-time, minutes)
   Urgent + under ₹1L: UPI (instant)
   Non-urgent any amount: NEFT (up to 2 hours)
-  Paper trail needed: Cheque (T+1 clearing)
+  Paper trail needed: Cheque (T+3 hour clearing)
 
 Rule 5 — Cost Optimization:
   All digital channels: zero cost for savings account online transactions

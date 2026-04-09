@@ -32,7 +32,7 @@ The Reserve Bank of India mandates distinct rails for different transaction prof
 | **NEFT** | ₹1,00,001 – ₹1,99,999 | Half-hourly batches | Medium-value transfers |
 | **RTGS** | ≥ ₹2,00,000 | Real-time gross | High-value, time-critical |
 | **IMPS** | Up to ₹5,00,000 | Instant | 24×7 interbank |
-| **Cheque** | Any | 2-3 business days | Legacy, compliance |
+| **Cheque** | Any | T+3 hours (RBI CTS rule) | Legal, government, paper-trail |
 
 ### Regulatory Constraints (Indian Payment Law)
 

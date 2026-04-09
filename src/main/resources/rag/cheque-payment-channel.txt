@@ -10,9 +10,9 @@ Transaction Limits:
 - Demand Draft: available as a safer alternative for amounts where cheque dishonour risk is high
 
 Clearing & Settlement:
-- CTS clearing: T+1 (cheque deposited on Day 0, cleared by end of Day 1 in same grid)
-- Inter-grid clearing: T+2 (cheques between different CTS grids)
-- India operates 3 CTS grids: Mumbai (western), New Delhi (northern), Chennai (southern)
+- CTS clearing: T+3 hours (RBI accelerated clearing rule — cheque deposited and cleared within 3 hours in same grid)
+- Inter-grid clearing: T+3 hours (unified under RBI's accelerated CTS mandate, eliminating grid-based delays)
+- India operates 3 CTS grids: Mumbai (western), New Delhi (northern), Chennai (southern) — all under T+3 hour rule
 - MICR (Magnetic Ink Character Recognition) code identifies the bank/branch for clearing
 - Positive Pay: drawer must electronically submit cheque details (number, date, payee, amount) to bank before issuance for cheques ≥ ₹50,000
 
@@ -28,7 +28,7 @@ LOW VALUE (₹0 – ₹50,000):
 - Risk level: MEDIUM-HIGH
 - Recommend UPI or NEFT as safer alternatives for this range
 - If cheque chosen: verify drawer identity, check account balance adequacy
-- Processing: standard CTS clearing, T+1
+- Processing: standard CTS clearing, T+3 hours
 
 MEDIUM VALUE (₹50,001 – ₹5,00,000):
 - Positive Pay System applies — drawer must pre-register cheque details
@@ -75,14 +75,14 @@ When to Recommend Cheque:
 
 When to DISCOURAGE Cheque:
 - Any transaction where UPI, NEFT, or RTGS is available
-- Urgent payments (T+1 clearing delay)
+- Urgent payments (T+3 hour clearing still slower than instant UPI/IMPS)
 - Transactions with unknown/untrusted parties
 - High-value transactions (use RTGS instead)
 - Cross-city transactions (use NEFT/RTGS for speed)
 
 Fraud Patterns Specific to Cheque:
 - Cheque forgery: signature falsification, altered payee name or amount
-- Cheque kiting: exploiting float time between deposit and clearing
+- Cheque kiting: exploiting float time between deposit and clearing (reduced risk under T+3 hour rule)
 - Cheque washing: chemical alteration of payee or amount using solvents
 - Counterfeit cheques: entirely fabricated cheque leaves
 - Post-dating abuse: issuing cheques with future dates with intent to default

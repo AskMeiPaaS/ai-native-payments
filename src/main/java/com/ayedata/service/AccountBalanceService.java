@@ -14,6 +14,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -178,6 +179,57 @@ public class AccountBalanceService {
         };
         log.info("[PII-REVEAL] userId={} field={} requestedAt={}", resolvedUserId, field, Instant.now());
         return value != null ? value : "—";
+    }
+
+    /**
+     * Return a compact one-line-per-transaction summary of the last N transactions.
+     * Designed for LLM context injection — keeps output concise.
+     */
+    public List<String> getRecentTransactionSummary(String userId, int limit) {
+        String resolvedUserId = normalizeUserId(userId);
+        Query query = new Query(Criteria.where("userId").is(resolvedUserId))
+                .with(Sort.by(Sort.Direction.DESC, "createdAt"))
+                .limit(limit);
+        List<TransactionRecord> txns = mongoTemplate.find(query, TransactionRecord.class);
+        Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
+
+        return txns.stream().map(txn -> {
+            FinancialData fd = txn.getFinancialData();
+            double amount = fd != null ? fd.getAmount() : 0;
+            String instrType = txn.getInstructionType();
+            boolean isCredit = instrType != null && instrType.contains("RECEIVE");
+            String counterparty = fd != null
+                    ? (isCredit ? fd.getDonor_account() : fd.getRecipient_account())
+                    : null;
+            String displayName = counterparty != null
+                    ? registry.getOrDefault(counterparty, counterparty)
+                    : "unknown";
+            String channel = isKnownChannel(txn.getPaymentMethod()) ? txn.getPaymentMethod() : "";
+            String status = txn.getStatus() != null ? txn.getStatus() : "UNKNOWN";
+            return String.format("%s ₹%.0f %s %s %s",
+                    isCredit ? "←" : "→", amount, displayName,
+                    channel.isEmpty() ? "" : "(" + channel + ")",
+                    status);
+        }).toList();
+    }
+
+    /**
+     * Return transaction velocity: count of transactions in the last 24h and 7d.
+     */
+    public Map<String, Long> getTransactionVelocity(String userId) {
+        String resolvedUserId = normalizeUserId(userId);
+        Instant now = Instant.now();
+
+        long todayCount = mongoTemplate.count(
+                new Query(Criteria.where("userId").is(resolvedUserId)
+                        .and("createdAt").gte(now.minus(1, ChronoUnit.DAYS))),
+                TransactionRecord.class);
+        long weekCount = mongoTemplate.count(
+                new Query(Criteria.where("userId").is(resolvedUserId)
+                        .and("createdAt").gte(now.minus(7, ChronoUnit.DAYS))),
+                TransactionRecord.class);
+
+        return Map.of("today", todayCount, "week", weekCount);
     }
 
     private static String maskEmail(String email) {

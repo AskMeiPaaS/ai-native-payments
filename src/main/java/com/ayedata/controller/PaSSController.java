@@ -166,11 +166,9 @@ public class PaSSController {
                 if (!trySendEvent(emitter, startEvent, request.getSessionId(), emitterCompleted)) return;
 
                 // Heartbeat thread — fires every 15 s to keep the SSE connection alive.
-                // This prevents Node.js / browser idle-connection timeouts during the silent
-                // gaps in Ollama inference (especially between a tool call and the second LLM
-                // response, which can be several minutes on slow hardware).
+                // Stored as a reference so we can interrupt it for immediate cleanup.
                 AtomicBoolean heartbeatDone = new AtomicBoolean(false);
-                Thread.ofVirtual().name("heartbeat-" + request.getSessionId()).start(() -> {
+                Thread heartbeatThread = Thread.ofVirtual().name("heartbeat-" + request.getSessionId()).start(() -> {
                     try {
                         while (!emitterCompleted.get() && !heartbeatDone.get()) {
                             Thread.sleep(15_000);
@@ -193,6 +191,10 @@ public class PaSSController {
                     }
                 });
 
+                // Capture step-level token metrics from orchestration stage events
+                AtomicInteger step1InputTokens  = new AtomicInteger(0);
+                AtomicInteger step1OutputTokens = new AtomicInteger(0);
+
                 // Get the token stream from the two-fold streaming orchestrator,
                 // passing a stage callback that emits SSE "stage" events to the UI.
                 TokenStream tokenStream = orchestratorAgent.orchestrateSwitchStreaming(
@@ -200,6 +202,14 @@ public class PaSSController {
                         (stageName, stageData) -> {
                             if (emitterCompleted.get()) return;
                             try {
+                                // Extract step1 token counts from the "classified" stage
+                                if ("classified".equals(stageName)) {
+                                    Object in  = stageData.get("step1InputTokens");
+                                    Object out = stageData.get("step1OutputTokens");
+                                    if (in  instanceof Number n) step1InputTokens.set(n.intValue());
+                                    if (out instanceof Number n) step1OutputTokens.set(n.intValue());
+                                }
+
                                 Map<String, Object> payload = new LinkedHashMap<>(stageData);
                                 payload.put("stage", stageName);
                                 SseEmitter.SseEventBuilder stageEvent = SseEmitter.event()
@@ -241,22 +251,35 @@ public class PaSSController {
                         })
                         .onCompleteResponse(response -> {
                             try {
-                                heartbeatDone.set(true); // stop heartbeat thread
+                                heartbeatDone.set(true);
+                                heartbeatThread.interrupt(); // wake from sleep immediately
                                 long elapsedMs = System.currentTimeMillis() - startTime;
 
-                                // Extract real token counts from LangChain4j TokenUsage
-                                TokenUsage tu = response.tokenUsage();
-                                int inputTokens  = (tu != null && tu.inputTokenCount()  != null) ? tu.inputTokenCount()  : 0;
-                                int outputTokens = (tu != null && tu.outputTokenCount() != null) ? tu.outputTokenCount() : 0;
-                                int totalTokens  = (tu != null && tu.totalTokenCount()  != null) ? tu.totalTokenCount()  : inputTokens + outputTokens;
+                                // Step 1 (classify) tokens — captured from "classified" stage event
+                                int s1In  = step1InputTokens.get();
+                                int s1Out = step1OutputTokens.get();
 
-                                // Record real-request performance (no synthetic probe needed)
-                                ollamaMetrics.record(outputTokens, inputTokens, elapsedMs);
+                                // Step 3 (format/stream) tokens — from LangChain4j TokenUsage
+                                TokenUsage tu = response.tokenUsage();
+                                int s3In  = (tu != null && tu.inputTokenCount()  != null) ? tu.inputTokenCount()  : 0;
+                                int s3Out = (tu != null && tu.outputTokenCount() != null) ? tu.outputTokenCount() : 0;
+
+                                // Combined totals
+                                int totalInput  = s1In + s3In;
+                                int totalOutput = s1Out + s3Out;
+                                int totalTokens = totalInput + totalOutput;
+
+                                // Record combined metrics for ops dashboard
+                                ollamaMetrics.record(totalOutput, totalInput, elapsedMs);
 
                                 Map<String, Object> completeData = new LinkedHashMap<>();
                                 completeData.put("elapsedMs", elapsedMs);
-                                completeData.put("inputTokens", inputTokens);
-                                completeData.put("outputTokens", outputTokens);
+                                completeData.put("step1InputTokens", s1In);
+                                completeData.put("step1OutputTokens", s1Out);
+                                completeData.put("step3InputTokens", s3In);
+                                completeData.put("step3OutputTokens", s3Out);
+                                completeData.put("inputTokens", totalInput);
+                                completeData.put("outputTokens", totalOutput);
                                 completeData.put("totalTokens", totalTokens);
                                 completeData.put("message", String.format("✅ Completed in %.2f seconds", elapsedMs / 1000.0));
                                 SseEmitter.SseEventBuilder completeEvent = SseEmitter.event()
@@ -279,9 +302,8 @@ public class PaSSController {
                                             elapsedMs,
                                             "/api/v1/agent/orchestrate-stream"
                                     );
-                                    Thread.ofVirtual().name("temporal-archive-" + request.getSessionId())
-                                            .start(() -> orchestratorAgent.getTemporalMemoryService()
-                                                    .archiveTurn(request.getSessionId(), request.getUserIntent(), reply));
+                                    orchestratorAgent.submitTemporalArchive(
+                                            request.getSessionId(), request.getUserIntent(), reply);
                                 }
                             } catch (Exception e) {
                                 log.warn("Session {}: Error sending complete event", request.getSessionId(), e);
@@ -290,7 +312,8 @@ public class PaSSController {
                             }
                         })
                         .onError(error -> {
-                            heartbeatDone.set(true); // stop heartbeat thread
+                            heartbeatDone.set(true);
+                            heartbeatThread.interrupt(); // wake from sleep immediately
                             orchestratorAgent.cleanupStreamingSession(request.getSessionId());
                             log.error("Session {}: Streaming error from LLM", request.getSessionId(), error);
                             auditLoggingService.logErrorEvent(

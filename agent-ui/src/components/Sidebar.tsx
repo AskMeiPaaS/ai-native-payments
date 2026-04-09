@@ -22,6 +22,10 @@ interface SidebarProps {
     outputTokens: number;
     totalTokens: number;
     elapsedMs: number;
+    step1InputTokens?: number;
+    step1OutputTokens?: number;
+    step3InputTokens?: number;
+    step3OutputTokens?: number;
   } | null;
 }
 
@@ -151,12 +155,20 @@ export default function Sidebar({
         {lastTokenStats ? (
           <div className="token-stats-grid">
             <div className="token-stat">
-              <span className="token-stat__label">In</span>
-              <span className="token-stat__value">{lastTokenStats.inputTokens}</span>
+              <span className="token-stat__label">Step 1 In</span>
+              <span className="token-stat__value">{lastTokenStats.step1InputTokens ?? 0}</span>
             </div>
             <div className="token-stat">
-              <span className="token-stat__label">Out</span>
-              <span className="token-stat__value">{lastTokenStats.outputTokens}</span>
+              <span className="token-stat__label">Step 1 Out</span>
+              <span className="token-stat__value">{lastTokenStats.step1OutputTokens ?? 0}</span>
+            </div>
+            <div className="token-stat">
+              <span className="token-stat__label">Step 3 In</span>
+              <span className="token-stat__value">{lastTokenStats.step3InputTokens ?? 0}</span>
+            </div>
+            <div className="token-stat">
+              <span className="token-stat__label">Step 3 Out</span>
+              <span className="token-stat__value">{lastTokenStats.step3OutputTokens ?? 0}</span>
             </div>
             <div className="token-stat">
               <span className="token-stat__label">Total</span>

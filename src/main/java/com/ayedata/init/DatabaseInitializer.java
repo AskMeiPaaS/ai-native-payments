@@ -1,5 +1,6 @@
 package com.ayedata.init;
 
+import com.ayedata.audit.init.AuditIndexInitializer;
 import com.ayedata.hitl.init.HitlDatabaseInitializer;
 import com.ayedata.rag.init.RagKnowledgeSeeder;
 import org.slf4j.Logger;
@@ -7,7 +8,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.index.Index;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -27,6 +30,7 @@ public class DatabaseInitializer implements ApplicationRunner {
     private final VectorSearchIndexInitializer vectorSearchIndexInitializer;
     private final HitlDatabaseInitializer hitlDatabaseInitializer;
     private final MemoryDatabaseInitializer memoryDatabaseInitializer;
+    private final AuditIndexInitializer auditIndexInitializer;
     private final RagKnowledgeSeeder ragKnowledgeSeeder;
     private final UserProfileInitializer userProfileInitializer;
 
@@ -37,6 +41,7 @@ public class DatabaseInitializer implements ApplicationRunner {
             VectorSearchIndexInitializer vectorSearchIndexInitializer,
             HitlDatabaseInitializer hitlDatabaseInitializer,
             MemoryDatabaseInitializer memoryDatabaseInitializer,
+            AuditIndexInitializer auditIndexInitializer,
             RagKnowledgeSeeder ragKnowledgeSeeder,
             UserProfileInitializer userProfileInitializer) {
         this.primaryTemplate = primaryTemplate;
@@ -45,6 +50,7 @@ public class DatabaseInitializer implements ApplicationRunner {
         this.vectorSearchIndexInitializer = vectorSearchIndexInitializer;
         this.hitlDatabaseInitializer = hitlDatabaseInitializer;
         this.memoryDatabaseInitializer = memoryDatabaseInitializer;
+        this.auditIndexInitializer = auditIndexInitializer;
         this.ragKnowledgeSeeder = ragKnowledgeSeeder;
         this.userProfileInitializer = userProfileInitializer;
     }
@@ -63,6 +69,24 @@ public class DatabaseInitializer implements ApplicationRunner {
             }
         }
 
+        // 0b. Indexes on transactions
+        try {
+            var txnIndexOps = primaryTemplate.indexOps("transactions");
+            // Covers: dashboard, velocity counts, history, and search queries
+            txnIndexOps.createIndex(new Index()
+                    .on("userId", Sort.Direction.ASC)
+                    .on("createdAt", Sort.Direction.DESC));
+            log.info("✅ Created compound index (userId, createdAt) on transactions");
+            // Covers: type-filtered queries (credits-only / debits-only)
+            txnIndexOps.createIndex(new Index()
+                    .on("userId", Sort.Direction.ASC)
+                    .on("instructionType", Sort.Direction.ASC)
+                    .on("createdAt", Sort.Direction.DESC));
+            log.info("✅ Created compound index (userId, instructionType, createdAt) on transactions");
+        } catch (Exception e) {
+            log.warn("⚠️ transactions index creation: {}", e.getMessage());
+        }
+
         // 1. Queryable Encryption Key Vault
         encryptionKeyInitializer.initializeKeyVault();
 
@@ -75,10 +99,13 @@ public class DatabaseInitializer implements ApplicationRunner {
         // 4. Memory Database (temporal + RAG + chat memory)
         memoryDatabaseInitializer.initialize();
 
-        // 5. Seed demo user profiles (with encrypted PII)
+        // 5. Audit Database (indexes on system_audit_logs)
+        auditIndexInitializer.ensureIndexes();
+
+        // 6. Seed demo user profiles (with encrypted PII)
         userProfileInitializer.seedDemoUsers();
 
-        // 6. Seed RAG knowledge asynchronously (Voyage AI API — non-blocking)
+        // 7. Seed RAG knowledge asynchronously (Voyage AI API — non-blocking)
         Thread.ofVirtual().name("rag-seed").start(ragKnowledgeSeeder::seed);
     }
 }

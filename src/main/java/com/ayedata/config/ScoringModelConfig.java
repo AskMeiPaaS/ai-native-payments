@@ -1,16 +1,18 @@
 package com.ayedata.config;
 
 import dev.langchain4j.model.scoring.ScoringModel;
+import dev.langchain4j.model.voyageai.VoyageAiScoringModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.net.http.HttpClient;
+import java.time.Duration;
 
 /**
  * Voyage AI reranker/scoring model bean (rerank-lite-1).
+ * Uses official LangChain4j Voyage AI integration.
  */
 @Configuration
 public class ScoringModelConfig {
@@ -29,14 +31,13 @@ public class ScoringModelConfig {
     private Integer requestTimeout;
 
     @Bean
-    public ScoringModel scoringModel(HttpClient sharedHttpClient) {
+    public ScoringModel scoringModel() {
         log.info("Creating Voyage AI ScoringModel: {} (top_k={})", rerankerModelName, rerankerTopK);
         return VoyageAiScoringModel.builder()
                 .apiKey(rerankerApiKey)
                 .modelName(rerankerModelName)
-                .httpClient(sharedHttpClient)
-                .requestTimeoutSeconds(requestTimeout)
-                .rerankerTopK(rerankerTopK)
+                .timeout(Duration.ofSeconds(requestTimeout))
+                .topK(rerankerTopK)
                 .build();
     }
 }

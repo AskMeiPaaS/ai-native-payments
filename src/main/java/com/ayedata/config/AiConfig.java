@@ -9,7 +9,6 @@ import jakarta.annotation.PostConstruct;
 /**
  * AI configuration startup diagnostics.
  * Bean definitions are in dedicated config classes:
- * @see HttpClientConfig
  * @see EmbeddingModelConfig
  * @see ScoringModelConfig
  * @see LlmModelConfig

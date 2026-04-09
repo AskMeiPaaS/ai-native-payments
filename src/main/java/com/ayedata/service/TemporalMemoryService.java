@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import com.ayedata.util.TextUtils;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -50,8 +51,27 @@ public class TemporalMemoryService {
     // -----------------------------------------------------------------------
 
     /**
+     * Probe the Voyage AI embedding service with a tiny payload.
+     * Returns {@code true} if the service responds with a valid vector, {@code false} otherwise.
+     * Intended as a lightweight pre-flight check before orchestration — avoids calling the
+     * LLM with degraded (no-RAG, no-recall) context when the embedding backend is down.
+     */
+    public boolean checkEmbeddingHealth() {
+        try {
+            float[] v = embeddingModel.embed(TextSegment.from("health")).content().vector();
+            return v != null && v.length > 0;
+        } catch (Exception e) {
+            log.error("Embedding health check failed (Voyage AI unreachable): {}", e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Archive a completed turn (user prompt + agent reply) with its embedding.
      * Call this on a virtual thread — it blocks on Voyage AI network I/O.
+     *
+     * @throws RuntimeException if the embedding call fails — callers should
+     *         catch this to decide whether to proceed without archival.
      */
     public void archiveTurn(String sessionId, String userText, String aiText) {
         try {
@@ -70,7 +90,8 @@ public class TemporalMemoryService {
             log.debug("Archived temporal turn for session {} ({} chars)", sessionId, combined.length());
 
         } catch (Exception e) {
-            log.warn("Temporal archive skipped for session {}: {}", sessionId, e.getMessage());
+            log.error("❌ Temporal archive FAILED for session {} — embedding service may be down: {}",
+                    sessionId, e.getMessage());
         }
     }
 
@@ -108,10 +129,10 @@ public class TemporalMemoryService {
      */
     public void ensureIndexes() {
         try {
-            // Use MongoDB's native API to create indexes, avoiding deprecated IndexOperations.ensureIndex()
             com.mongodb.client.MongoCollection<org.bson.Document> collection = 
                     memoryMongoTemplate.getCollection(COLLECTION);
             
+            // Compound index for recency-fallback query path
             org.bson.Document indexKey = new org.bson.Document()
                     .append("sessionId", 1)
                     .append("timestamp", -1);
@@ -121,11 +142,18 @@ public class TemporalMemoryService {
                             .name("sessionId_timestamp_idx");
             
             collection.createIndex(indexKey, indexOptions);
-            log.info("✅ memory_timeline indexes ensured");
+
+            // TTL index — auto-delete temporal turns after 7 days to prevent unbounded growth
+            collection.createIndex(
+                    new org.bson.Document("timestamp", 1),
+                    new com.mongodb.client.model.IndexOptions()
+                            .name("memory_timeline_ttl")
+                            .expireAfter(7L, TimeUnit.DAYS));
+
+            log.info("✅ memory_timeline indexes ensured (incl. 7-day TTL)");
         } catch (com.mongodb.MongoCommandException ex) {
-            // Index might already exist - this is fine
             if (ex.getMessage().contains("already exists")) {
-                log.debug("Index sessionId_timestamp_idx already exists");
+                log.debug("memory_timeline indexes already exist");
             } else {
                 log.warn("memory_timeline index creation issue: {}", ex.getMessage());
             }
@@ -139,8 +167,6 @@ public class TemporalMemoryService {
     // -----------------------------------------------------------------------
 
     private List<Document> vectorSearchTimeline(String sessionId, float[] queryVector, int topK) {
-        // $vectorSearch with sessionId filter — requires Atlas vector index with
-        // the filter field configured (see DatabaseInitializer).
         Document vectorSearchStage = new Document("$vectorSearch", new Document()
                 .append("index", "memory_timeline_vector_index")
                 .append("path", "turnEmbedding")
@@ -155,10 +181,14 @@ public class TemporalMemoryService {
                 .append("timestamp", 1)
                 .append("score", new Document("$meta", "vectorSearchScore")));
 
-        return memoryMongoTemplate.getDb()
+        try (com.mongodb.client.MongoCursor<Document> cursor = memoryMongoTemplate.getDb()
                 .getCollection(COLLECTION)
                 .aggregate(List.of(vectorSearchStage, projectStage), Document.class)
-                .into(new ArrayList<>());
+                .cursor()) {
+            List<Document> results = new ArrayList<>();
+            cursor.forEachRemaining(results::add);
+            return results;
+        }
     }
 
     private List<Map<String, String>> recentHistory(String sessionId, int topK) {

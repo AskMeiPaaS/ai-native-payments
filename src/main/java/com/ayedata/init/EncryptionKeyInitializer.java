@@ -39,6 +39,7 @@ public class EncryptionKeyInitializer {
     private static final Logger log = LoggerFactory.getLogger(EncryptionKeyInitializer.class);
 
     private final MongoTemplate primaryTemplate;
+    private final MongoTemplate auditMongoTemplate;
 
     @Value("${spring.data.mongodb.primary.uri}")
     private String primaryUri;
@@ -56,8 +57,10 @@ public class EncryptionKeyInitializer {
     private String localMasterKeyBase64;
 
     public EncryptionKeyInitializer(
-            @Qualifier("primaryMongoTemplate") MongoTemplate primaryTemplate) {
+            @Qualifier("primaryMongoTemplate") MongoTemplate primaryTemplate,
+            @Qualifier("auditMongoTemplate") MongoTemplate auditMongoTemplate) {
         this.primaryTemplate = primaryTemplate;
+        this.auditMongoTemplate = auditMongoTemplate;
     }
 
     /**
@@ -121,7 +124,7 @@ public class EncryptionKeyInitializer {
                     .append("timestamp", new Date())
                     .append("status", "SUCCESS");
 
-            primaryTemplate.getCollection("system_audit_logs").insertOne(auditEntry);
+            auditMongoTemplate.getCollection("system_audit_logs").insertOne(auditEntry);
             log.info("✅ Queryable Encryption DEK generated for keyAltName='{}'", userProfileKeyAltName);
 
         } catch (Exception e) {

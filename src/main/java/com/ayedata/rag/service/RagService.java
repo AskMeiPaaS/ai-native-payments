@@ -201,11 +201,13 @@ public class RagService {
                 .append("content", 1)
                 .append("score", new Document("$meta", "vectorSearchScore")));
 
-        try {
-            return memoryMongoTemplate.getDb()
-                    .getCollection(COLLECTION)
-                    .aggregate(List.of(vectorSearchStage, projectStage), Document.class)
-                    .into(new ArrayList<>());
+        try (com.mongodb.client.MongoCursor<Document> cursor = memoryMongoTemplate.getDb()
+                .getCollection(COLLECTION)
+                .aggregate(List.of(vectorSearchStage, projectStage), Document.class)
+                .cursor()) {
+            List<Document> results = new ArrayList<>();
+            cursor.forEachRemaining(results::add);
+            return results;
         } catch (Exception e) {
             log.debug("$vectorSearch unavailable: {}", e.getMessage());
             return Collections.emptyList();

@@ -12,6 +12,7 @@ import com.ayedata.domain.TransactionRecord;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolMemoryId;
+import org.bson.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -19,30 +20,33 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Component;
 
+import jakarta.annotation.PostConstruct;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class LedgerTools {
     private static final Logger log = LoggerFactory.getLogger(LedgerTools.class);
 
-    /**
-     * Session-scoped userId registry. Populated before orchestration, looked up
-     * by {@code @ToolMemoryId} during tool execution (which can happen on any
-     * thread — OkHttp callback, virtual thread, etc.).
-     */
-    private static final ConcurrentHashMap<String, String> sessionUserMap = new ConcurrentHashMap<>();
+    /** MongoDB collection in {@code pass_memory} that maps sessionId → userId. */
+    private static final String SESSION_REGISTRY = "session_registry";
 
     private final FraudContextService fraudContextService;
     private final PaymentSwitchRouter paymentSwitchRouter;
     private final MongoLedgerService mongoLedgerService;
     private final AccountBalanceService accountBalanceService;
     private final MongoTemplate mongoTemplate;
+    private final MongoTemplate memoryMongoTemplate;
 
     private static final DateTimeFormatter TXN_DATE_FMT =
             DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm").withZone(ZoneId.of("Asia/Kolkata"));
@@ -51,31 +55,64 @@ public class LedgerTools {
                        PaymentSwitchRouter paymentSwitchRouter,
                        MongoLedgerService mongoLedgerService,
                        AccountBalanceService accountBalanceService,
-                       @Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate) {
+                       @Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate,
+                       @Qualifier("memoryMongoTemplate") MongoTemplate memoryMongoTemplate) {
         this.fraudContextService = fraudContextService;
         this.paymentSwitchRouter = paymentSwitchRouter;
         this.mongoLedgerService = mongoLedgerService;
         this.accountBalanceService = accountBalanceService;
         this.mongoTemplate = mongoTemplate;
+        this.memoryMongoTemplate = memoryMongoTemplate;
     }
 
-    /** Register a session → userId mapping before orchestration starts. */
-    public void registerSession(String sessionId, String userId) {
-        sessionUserMap.put(sessionId, userId);
-    }
-
-    /** Remove the session mapping after orchestration completes. */
-    public void unregisterSession(String sessionId) {
-        sessionUserMap.remove(sessionId);
+    /** Ensure a 1-hour TTL index on session_registry so orphaned sessions are auto-cleaned. */
+    @PostConstruct
+    void ensureSessionRegistryTtl() {
+        try {
+            var collection = memoryMongoTemplate.getCollection(SESSION_REGISTRY);
+            collection.createIndex(
+                    new org.bson.Document("updatedAt", 1),
+                    new com.mongodb.client.model.IndexOptions()
+                            .name("session_registry_ttl")
+                            .expireAfter(1L, TimeUnit.HOURS));
+            log.info("✅ session_registry TTL index ensured (1 hour)");
+        } catch (com.mongodb.MongoCommandException ex) {
+            if (!ex.getMessage().contains("already exists")) {
+                log.warn("session_registry TTL index creation issue: {}", ex.getMessage());
+            }
+        } catch (Exception e) {
+            log.warn("session_registry TTL index creation skipped: {}", e.getMessage());
+        }
     }
 
     /**
-     * Resolve the userId for the given session. Falls back to DEFAULT_USER_ID
-     * only if the session was never registered (should not happen in normal flow).
+     * Register a session → userId mapping in MongoDB before orchestration starts.
+     * Survives JVM restarts and works across multiple app replicas.
      */
-    private String resolveUserId(String sessionId) {
-        String uid = sessionUserMap.get(sessionId);
-        if (uid != null && !uid.isBlank()) return uid;
+    public void registerSession(String sessionId, String userId) {
+        Query query = Query.query(Criteria.where("_id").is(sessionId));
+        Update update = Update.update("userId", userId)
+                .set("updatedAt", new Date());
+        memoryMongoTemplate.upsert(query, update, SESSION_REGISTRY);
+    }
+
+    /** Remove the session mapping from MongoDB after orchestration completes. */
+    public void unregisterSession(String sessionId) {
+        memoryMongoTemplate.remove(
+                Query.query(Criteria.where("_id").is(sessionId)), SESSION_REGISTRY);
+    }
+
+    /**
+     * Resolve the userId for the given session from MongoDB. Falls back to
+     * DEFAULT_USER_ID only if the session was never registered.
+     */
+    public String resolveUserId(String sessionId) {
+        Query query = Query.query(Criteria.where("_id").is(sessionId));
+        Document doc = memoryMongoTemplate.findOne(query, Document.class, SESSION_REGISTRY);
+        if (doc != null) {
+            String uid = doc.getString("userId");
+            if (uid != null && !uid.isBlank()) return uid;
+        }
         log.warn("No userId registered for session {}; falling back to default", sessionId);
         return AccountBalanceService.DEFAULT_USER_ID;
     }
@@ -295,15 +332,27 @@ public class LedgerTools {
             Returns the user's recent transactions (last 5 by default). \
             Use this when the user asks: 'show my transactions', 'recent payments', \
             'transaction history', 'what did I pay', 'last transactions', \
-            'show my activity', 'payment history', etc.\
+            'show my activity', 'payment history', etc. \
+            Use the type filter when the user asks for only credits/debits, e.g. \
+            'show my credits', 'only debits', 'money received', 'money sent'.\
             """)
     public String recentTransactions(@ToolMemoryId String memoryId,
-                                     @P(value = "Number of transactions to return (1-10). Defaults to 5.", required = false) Integer count) {
+                                     @P(value = "Number of transactions to return (1-10). Defaults to 5.", required = false) Integer count,
+                                     @P(value = "Filter by transaction type: 'credit' for received payments, 'debit' for sent payments. Omit for all.", required = false) String type) {
         String userId = resolveUserId(memoryId);
         int limit = (count != null && count >= 1 && count <= 10) ? count : 5;
-        log.info("Transaction history tool invoked: session={} user={} limit={}", memoryId, userId, limit);
+        log.info("Transaction history tool invoked: session={} user={} limit={} type={}", memoryId, userId, limit, type);
         try {
-            Query query = new Query(Criteria.where("userId").is(userId))
+            Criteria criteria = Criteria.where("userId").is(userId);
+            if (type != null && !type.isBlank()) {
+                String typeUpper = type.trim().toUpperCase();
+                if (typeUpper.startsWith("CREDIT") || typeUpper.equals("RECEIVE") || typeUpper.equals("RECEIVED")) {
+                    criteria = criteria.and("instructionType").is("PASS_MONEY_RECEIVE");
+                } else if (typeUpper.startsWith("DEBIT") || typeUpper.equals("SEND") || typeUpper.equals("SENT") || typeUpper.equals("TRANSFER")) {
+                    criteria = criteria.and("instructionType").is("PASS_MONEY_TRANSFER");
+                }
+            }
+            Query query = new Query(criteria)
                     .with(Sort.by(Sort.Direction.DESC, "createdAt"))
                     .limit(limit);
             List<TransactionRecord> txns = mongoTemplate.find(query, TransactionRecord.class);
@@ -315,10 +364,37 @@ public class LedgerTools {
             Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
             StringBuilder sb = new StringBuilder();
             sb.append(String.format("TRANSACTIONS: Showing %d most recent transaction(s):\n", txns.size()));
+
+            double totalDebits = 0;
+            double totalCredits = 0;
+            int debitCount = 0;
+            int creditCount = 0;
+
             for (int i = 0; i < txns.size(); i++) {
                 TransactionRecord txn = txns.get(i);
                 sb.append(formatTransaction(i + 1, txn, userId, registry));
+
+                String instrType = txn.getInstructionType();
+                boolean isCredit = instrType != null && instrType.contains("RECEIVE");
+                double amount = txn.getFinancialData() != null ? txn.getFinancialData().getAmount() : 0;
+                if (isCredit) {
+                    totalCredits += amount;
+                    creditCount++;
+                } else {
+                    totalDebits += amount;
+                    debitCount++;
+                }
             }
+
+            sb.append("\nSummary:");
+            if (debitCount > 0) {
+                sb.append(String.format(" Debits: %d × ₹%.2f.", debitCount, totalDebits));
+            }
+            if (creditCount > 0) {
+                sb.append(String.format(" Credits: %d × ₹%.2f.", creditCount, totalCredits));
+            }
+            sb.append(String.format(" Net: ₹%.2f\n", totalCredits - totalDebits));
+
             return sb.toString();
         } catch (Exception e) {
             log.warn("Transaction query failed for user {}: {}", userId, e.getMessage());
@@ -329,12 +405,14 @@ public class LedgerTools {
     @Tool("""
             Searches the user's transaction history for payments to a specific person or account. \
             Use this when the user asks: 'did I pay Priya', 'how much did I send to Arjun', \
-            'payments to <name>', 'show transfers to <person>', etc.\
+            'payments to <name>', 'show transfers to <person>', etc. \
+            Use the type filter to narrow by credit/debit direction.\
             """)
     public String searchTransactions(@ToolMemoryId String memoryId,
-                                     @P("Name, userId, or account number of the person to search for") String searchTerm) {
+                                     @P("Name, userId, or account number of the person to search for") String searchTerm,
+                                     @P(value = "Filter by transaction type: 'credit' for received, 'debit' for sent. Omit for all.", required = false) String type) {
         String userId = resolveUserId(memoryId);
-        log.info("Transaction search tool invoked: session={} user={} search='{}'", memoryId, userId, searchTerm);
+        log.info("Transaction search tool invoked: session={} user={} search='{}' type={}", memoryId, userId, searchTerm, type);
 
         if (searchTerm == null || searchTerm.isBlank()) {
             return "QUERY_ERROR: Please specify a person or account to search for.";
@@ -344,7 +422,16 @@ public class LedgerTools {
             // Resolve the search term to a userId if possible
             String targetUserId = UserProfileInitializer.resolveUserIdByNameOrId(searchTerm);
 
-            Query query = new Query(Criteria.where("userId").is(userId))
+            Criteria criteria = Criteria.where("userId").is(userId);
+            if (type != null && !type.isBlank()) {
+                String typeUpper = type.trim().toUpperCase();
+                if (typeUpper.startsWith("CREDIT") || typeUpper.equals("RECEIVE") || typeUpper.equals("RECEIVED")) {
+                    criteria = criteria.and("instructionType").is("PASS_MONEY_RECEIVE");
+                } else if (typeUpper.startsWith("DEBIT") || typeUpper.equals("SEND") || typeUpper.equals("SENT") || typeUpper.equals("TRANSFER")) {
+                    criteria = criteria.and("instructionType").is("PASS_MONEY_TRANSFER");
+                }
+            }
+            Query query = new Query(criteria)
                     .with(Sort.by(Sort.Direction.DESC, "createdAt"))
                     .limit(10);
             List<TransactionRecord> allTxns = mongoTemplate.find(query, TransactionRecord.class);
@@ -376,13 +463,151 @@ public class LedgerTools {
 
             StringBuilder sb = new StringBuilder();
             sb.append(String.format("TRANSACTIONS: Found %d transaction(s) involving '%s':\n", matched.size(), searchTerm));
+
+            double totalDebits = 0;
+            double totalCredits = 0;
+            int debitCount = 0;
+            int creditCount = 0;
+
             for (int i = 0; i < matched.size(); i++) {
-                sb.append(formatTransaction(i + 1, matched.get(i), userId, registry));
+                TransactionRecord txn = matched.get(i);
+                sb.append(formatTransaction(i + 1, txn, userId, registry));
+
+                // Accumulate totals
+                String instrType = txn.getInstructionType();
+                boolean isCredit = instrType != null && instrType.contains("RECEIVE");
+                double amount = txn.getFinancialData() != null ? txn.getFinancialData().getAmount() : 0;
+                if (isCredit) {
+                    totalCredits += amount;
+                    creditCount++;
+                } else {
+                    totalDebits += amount;
+                    debitCount++;
+                }
             }
+
+            // Append accurate summary so downstream never has to guess
+            sb.append("\nSummary:");
+            if (debitCount > 0) {
+                sb.append(String.format(" Debits: %d × ₹%.2f.", debitCount, totalDebits));
+            }
+            if (creditCount > 0) {
+                sb.append(String.format(" Credits: %d × ₹%.2f.", creditCount, totalCredits));
+            }
+            sb.append(String.format(" Net: ₹%.2f\n", totalCredits - totalDebits));
+
             return sb.toString();
         } catch (Exception e) {
             log.warn("Transaction search failed for user {}: {}", userId, e.getMessage());
             return "QUERY_ERROR: Unable to search transactions. " + e.getMessage();
+        }
+    }
+
+    // ── MongoDB Query Execution (called directly by orchestrator Step 2) ──
+
+    /** Fields the LLM is allowed to include in a MongoDB query filter. */
+    private static final Set<String> ALLOWED_FILTER_FIELDS =
+            Set.of("instructionType", "paymentMethod", "status");
+
+    /**
+     * Execute a MongoDB query against the transactions collection using the
+     * filter generated by the Step 1 classifier. The {@code userId} is always
+     * injected (never trusting the LLM-supplied filter for identity).
+     *
+     * @param userId       authenticated user — forced into every query
+     * @param filterJson   JSON filter from the classifier (e.g. {@code {"instructionType":"PASS_MONEY_RECEIVE"}})
+     * @param searchTerm   optional counterparty name for client-side filtering (may be null)
+     * @param limit        max documents to return
+     * @return formatted transaction list or error string
+     */
+    public String executeMongoQuery(String userId, String filterJson, String searchTerm, int limit) {
+        log.info("executeMongoQuery: userId={} filter={} search='{}' limit={}", userId, filterJson, searchTerm, limit);
+        try {
+            // Build criteria — userId is ALWAYS injected (security)
+            Criteria criteria = Criteria.where("userId").is(userId);
+
+            // Parse and apply whitelisted filter fields from the LLM-generated JSON
+            if (filterJson != null && !filterJson.isBlank() && !filterJson.equals("{}")) {
+                try {
+                    Document filterDoc = Document.parse(filterJson);
+                    for (var entry : filterDoc.entrySet()) {
+                        if (ALLOWED_FILTER_FIELDS.contains(entry.getKey())) {
+                            criteria = criteria.and(entry.getKey()).is(entry.getValue());
+                        } else if ("createdAt".equals(entry.getKey()) && entry.getValue() instanceof Document dateDoc) {
+                            // Support date range: {"createdAt": {"$gte": "7d"}} → last 7 days
+                            String gte = dateDoc.getString("$gte");
+                            if (gte != null && gte.matches("\\d+d")) {
+                                int days = Integer.parseInt(gte.replace("d", ""));
+                                criteria = criteria.and("createdAt").gte(Instant.now().minus(days, ChronoUnit.DAYS));
+                            }
+                        } else {
+                            log.warn("executeMongoQuery: rejected non-whitelisted field '{}'", entry.getKey());
+                        }
+                    }
+                } catch (Exception parseEx) {
+                    log.warn("executeMongoQuery: filter parse failed '{}': {}", filterJson, parseEx.getMessage());
+                    // Continue with userId-only criteria
+                }
+            }
+
+            Query query = new Query(criteria)
+                    .with(Sort.by(Sort.Direction.DESC, "createdAt"))
+                    .limit(limit);
+            List<TransactionRecord> txns = mongoTemplate.find(query, TransactionRecord.class);
+
+            // Optional client-side counterparty text search
+            if (searchTerm != null && !searchTerm.isBlank() && !"none".equalsIgnoreCase(searchTerm)) {
+                String targetUserId = UserProfileInitializer.resolveUserIdByNameOrId(searchTerm);
+                String searchUpper = searchTerm.toUpperCase();
+                txns = txns.stream().filter(txn -> {
+                    FinancialData fd = txn.getFinancialData();
+                    if (fd == null) return false;
+                    if (targetUserId != null) {
+                        if (targetUserId.equalsIgnoreCase(fd.getRecipient_account())
+                                || targetUserId.equalsIgnoreCase(fd.getDonor_account())
+                                || targetUserId.equalsIgnoreCase(fd.getMerchantId())) {
+                            return true;
+                        }
+                    }
+                    String merchant = fd.getMerchantId() != null ? fd.getMerchantId().toUpperCase() : "";
+                    String recipient = fd.getRecipient_account() != null ? fd.getRecipient_account().toUpperCase() : "";
+                    String donor = fd.getDonor_account() != null ? fd.getDonor_account().toUpperCase() : "";
+                    return merchant.contains(searchUpper) || recipient.contains(searchUpper) || donor.contains(searchUpper);
+                }).toList();
+            }
+
+            if (txns.isEmpty()) {
+                return searchTerm != null && !searchTerm.isBlank() && !"none".equalsIgnoreCase(searchTerm)
+                        ? String.format("TRANSACTIONS: No transactions found involving '%s'.", searchTerm)
+                        : "TRANSACTIONS: No transactions found for your account.";
+            }
+
+            Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format("TRANSACTIONS: Showing %d transaction(s):\n", txns.size()));
+
+            double totalDebits = 0, totalCredits = 0;
+            int debitCount = 0, creditCount = 0;
+
+            for (int i = 0; i < txns.size(); i++) {
+                TransactionRecord txn = txns.get(i);
+                sb.append(formatTransaction(i + 1, txn, userId, registry));
+                String instrType = txn.getInstructionType();
+                boolean isCredit = instrType != null && instrType.contains("RECEIVE");
+                double amount = txn.getFinancialData() != null ? txn.getFinancialData().getAmount() : 0;
+                if (isCredit) { totalCredits += amount; creditCount++; }
+                else { totalDebits += amount; debitCount++; }
+            }
+
+            sb.append("\nSummary:");
+            if (debitCount > 0) sb.append(String.format(" Debits: %d × ₹%.2f.", debitCount, totalDebits));
+            if (creditCount > 0) sb.append(String.format(" Credits: %d × ₹%.2f.", creditCount, totalCredits));
+            sb.append(String.format(" Net: ₹%.2f\n", totalCredits - totalDebits));
+
+            return sb.toString();
+        } catch (Exception e) {
+            log.warn("executeMongoQuery failed for user {}: {}", userId, e.getMessage());
+            return "QUERY_ERROR: Unable to execute query. " + e.getMessage();
         }
     }
 

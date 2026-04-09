@@ -71,6 +71,10 @@ interface TokenStats {
   outputTokens: number;
   totalTokens: number;
   elapsedMs: number;
+  step1InputTokens?: number;
+  step1OutputTokens?: number;
+  step3InputTokens?: number;
+  step3OutputTokens?: number;
 }
 
 interface AccountSummary {
@@ -514,6 +518,10 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       outputTokens: jsonData.outputTokens ?? 0,
                       totalTokens:  jsonData.totalTokens  ?? 0,
                       elapsedMs:    jsonData.elapsedMs,
+                      step1InputTokens:  jsonData.step1InputTokens  ?? 0,
+                      step1OutputTokens: jsonData.step1OutputTokens ?? 0,
+                      step3InputTokens:  jsonData.step3InputTokens  ?? 0,
+                      step3OutputTokens: jsonData.step3OutputTokens ?? 0,
                     });
                   }
                   setMessages((prev) => {

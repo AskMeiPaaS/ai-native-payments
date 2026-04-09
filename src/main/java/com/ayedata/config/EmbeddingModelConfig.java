@@ -1,16 +1,18 @@
 package com.ayedata.config;
 
 import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.voyageai.VoyageAiEmbeddingModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-import java.net.http.HttpClient;
+import java.time.Duration;
 
 /**
  * Voyage AI embedding model bean (voyage-4, 1024 dimensions).
+ * Uses official LangChain4j Voyage AI integration.
  */
 @Configuration
 public class EmbeddingModelConfig {
@@ -26,14 +28,12 @@ public class EmbeddingModelConfig {
     private Integer requestTimeout;
 
     @Bean
-    public EmbeddingModel embeddingModel(HttpClient sharedHttpClient) {
+    public EmbeddingModel embeddingModel() {
         log.info("Creating Voyage AI EmbeddingModel: {}", embeddingModelName);
-        return VoyageAiEmbeddingModelImpl.builder()
+        return VoyageAiEmbeddingModel.builder()
                 .apiKey(voyageApiKey)
                 .modelName(embeddingModelName)
-                .dimension(1024)
-                .httpClient(sharedHttpClient)
-                .requestTimeoutSeconds(requestTimeout)
+                .timeout(Duration.ofSeconds(requestTimeout))
                 .build();
     }
 }

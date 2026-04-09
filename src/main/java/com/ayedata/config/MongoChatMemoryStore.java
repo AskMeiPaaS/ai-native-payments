@@ -14,6 +14,7 @@ import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -36,6 +37,28 @@ public class MongoChatMemoryStore implements ChatMemoryStore {
 
     public MongoChatMemoryStore(@Qualifier("memoryMongoTemplate") MongoTemplate memoryMongoTemplate) {
         this.memoryMongoTemplate = memoryMongoTemplate;
+    }
+
+    /**
+     * Ensure a 7-day TTL index on agent_chat_memory so stale sessions are auto-cleaned.
+     * Called from {@link com.ayedata.init.MemoryDatabaseInitializer}.
+     */
+    public void ensureIndexes() {
+        try {
+            var collection = memoryMongoTemplate.getCollection(COLLECTION);
+            collection.createIndex(
+                    new org.bson.Document("updatedAt", 1),
+                    new com.mongodb.client.model.IndexOptions()
+                            .name("agent_chat_memory_ttl")
+                            .expireAfter(7L, TimeUnit.DAYS));
+            log.info("✅ agent_chat_memory TTL index ensured (7 days)");
+        } catch (com.mongodb.MongoCommandException ex) {
+            if (!ex.getMessage().contains("already exists")) {
+                log.warn("agent_chat_memory TTL index creation issue: {}", ex.getMessage());
+            }
+        } catch (Exception e) {
+            log.warn("agent_chat_memory TTL index creation skipped: {}", e.getMessage());
+        }
     }
 
     // -----------------------------------------------------------------------

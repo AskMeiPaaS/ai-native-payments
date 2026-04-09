@@ -26,9 +26,9 @@ public class ContextEnricher {
     private static final Logger log = LoggerFactory.getLogger(ContextEnricher.class);
 
     /** Max chars for agent reply text within each recalled temporal turn. */
-    private static final int MAX_TEMPORAL_REPLY_CHARS = 80;
+    private static final int MAX_TEMPORAL_REPLY_CHARS = 200;
     /** Max chars for user text within each recalled temporal turn. */
-    private static final int MAX_TEMPORAL_USER_CHARS = 60;
+    private static final int MAX_TEMPORAL_USER_CHARS = 120;
 
     /**
      * Canonical channel names paired with the uppercase keywords used to detect
@@ -113,14 +113,34 @@ public class ContextEnricher {
             sb.append("[YOUR ACCOUNT]\n");
             sb.append("Account: ").append(callerAcct != null ? callerAcct : "N/A");
             sb.append(" | Balance: ₹").append(String.format("%.2f", balance));
-            sb.append(" | Currency: INR\n\n");
+            sb.append(" | Currency: INR\n");
+
+            // Recent transactions (last 5) — compact one-liners
+            try {
+                var txnSummaries = accountBalanceService.getRecentTransactionSummary(callerUserId, 5);
+                if (!txnSummaries.isEmpty()) {
+                    sb.append("Recent transactions:\n");
+                    for (String line : txnSummaries) {
+                        sb.append("  ").append(line).append("\n");
+                    }
+                }
+            } catch (Exception ignored) { }
+
+            // Transaction velocity — helps LLM with safety awareness
+            try {
+                var velocity = accountBalanceService.getTransactionVelocity(callerUserId);
+                sb.append("Activity: ").append(velocity.get("today")).append(" today, ")
+                  .append(velocity.get("week")).append(" this week\n");
+            } catch (Exception ignored) { }
+
+            sb.append("\n");
         } catch (Exception e) {
             log.debug("Session {}: Account context unavailable: {}", sessionId, e.getMessage());
         }
 
         // 1. RAG — domain knowledge relevant to this query (budget managed by RagService)
         try {
-            String ragContext = ragService.retrieveContext(userIntent, 1);
+            String ragContext = ragService.retrieveContext(userIntent, 2);
             if (!ragContext.isBlank()) {
                 sb.append("[RELEVANT KNOWLEDGE]\n").append(ragContext).append("\n\n");
                 ragChars = ragContext.length();
@@ -141,7 +161,7 @@ public class ContextEnricher {
 
         // 3. Temporal memory — compacted past turns
         try {
-            List<Map<String, String>> history = temporalMemoryService.recallRelevantHistory(sessionId, userIntent, 1);
+            List<Map<String, String>> history = temporalMemoryService.recallRelevantHistory(sessionId, userIntent, 3);
             if (!history.isEmpty()) {
                 sb.append("[CONVERSATION HISTORY]\n");
                 for (Map<String, String> turn : history) {

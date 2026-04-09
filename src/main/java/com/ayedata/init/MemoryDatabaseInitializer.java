@@ -1,5 +1,6 @@
 package com.ayedata.init;
 
+import com.ayedata.config.MongoChatMemoryStore;
 import com.ayedata.rag.service.RagService;
 import com.ayedata.service.TemporalMemoryService;
 import org.slf4j.Logger;
@@ -26,24 +27,27 @@ public class MemoryDatabaseInitializer {
     private final VectorSearchIndexInitializer vectorSearchIndexInitializer;
     private final TemporalMemoryService temporalMemoryService;
     private final RagService ragService;
+    private final MongoChatMemoryStore chatMemoryStore;
 
     public MemoryDatabaseInitializer(
             @Qualifier("memoryMongoTemplate") MongoTemplate memoryTemplate,
             DatabaseConnectionValidator connectionValidator,
             VectorSearchIndexInitializer vectorSearchIndexInitializer,
             TemporalMemoryService temporalMemoryService,
-            RagService ragService) {
+            RagService ragService,
+            MongoChatMemoryStore chatMemoryStore) {
         this.memoryTemplate = memoryTemplate;
         this.connectionValidator = connectionValidator;
         this.vectorSearchIndexInitializer = vectorSearchIndexInitializer;
         this.temporalMemoryService = temporalMemoryService;
         this.ragService = ragService;
+        this.chatMemoryStore = chatMemoryStore;
     }
 
     public void initialize() {
         try {
             Set<String> existing = connectionValidator.waitForDatabase(memoryTemplate, "Memory");
-            for (String col : List.of(TemporalMemoryService.COLLECTION, RagService.COLLECTION, "agent_chat_memory")) {
+            for (String col : List.of(TemporalMemoryService.COLLECTION, RagService.COLLECTION, "agent_chat_memory", "session_registry")) {
                 if (!existing.contains(col)) {
                     memoryTemplate.createCollection(col);
                     log.info("✅ Created memory collection: {}", col);
@@ -51,6 +55,7 @@ public class MemoryDatabaseInitializer {
             }
             temporalMemoryService.ensureIndexes();
             ragService.ensureIndexes();
+            chatMemoryStore.ensureIndexes();
             vectorSearchIndexInitializer.createMemoryVectorIndexes();
         } catch (Exception e) {
             log.warn("⚠️ Memory database init failed (non-fatal): {}", e.getMessage());

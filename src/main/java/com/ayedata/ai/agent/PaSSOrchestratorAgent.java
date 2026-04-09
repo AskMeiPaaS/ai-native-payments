@@ -3,11 +3,15 @@ package com.ayedata.ai.agent;
 import com.ayedata.ai.tools.LedgerTools;
 import com.ayedata.config.MongoChatMemoryStore;
 import com.ayedata.init.UserProfileInitializer;
+import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.TemporalMemoryService;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.internal.Json;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.ollama.OllamaStreamingChatModel;
 import dev.langchain4j.service.AiServices;
@@ -24,7 +28,11 @@ import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.function.BiConsumer;
 
 /**
@@ -49,28 +57,39 @@ public class PaSSOrchestratorAgent {
     private final MongoChatMemoryStore chatMemoryStore;
     private final ContextEnricher contextEnricher;
     private final TemporalMemoryService temporalMemoryService;
+    private final AccountBalanceService accountBalanceService;
 
     private Supervisor supervisor;
     private StreamingSupervisor streamingSupervisor;
-    private IntentClassifier intentClassifier;
     private FormattingSupervisor formattingSupervisor;
     private boolean toolsAvailable = false;
 
     /** LangChain4j ToolExecutor registry — maps tool method name → executor. */
     private final Map<String, ToolExecutor> toolExecutors = new LinkedHashMap<>();
 
+    /**
+     * Bounded executor for temporal archiving. Limits concurrent fire-and-forget
+     * embedding calls to prevent thread accumulation when Voyage AI is slow.
+     * Virtual threads are cheap but the semaphore caps in-flight archive tasks.
+     */
+    private static final int MAX_CONCURRENT_ARCHIVES = 20;
+    private final Semaphore archiveSemaphore = new Semaphore(MAX_CONCURRENT_ARCHIVES);
+    private final ExecutorService archiveExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
     public PaSSOrchestratorAgent(LedgerTools ledgerTools,
                                  OllamaChatModel chatLanguageModel,
                                  OllamaStreamingChatModel streamingChatModel,
                                  MongoChatMemoryStore chatMemoryStore,
                                  ContextEnricher contextEnricher,
-                                 TemporalMemoryService temporalMemoryService) {
+                                 TemporalMemoryService temporalMemoryService,
+                                 AccountBalanceService accountBalanceService) {
         this.ledgerTools = ledgerTools;
         this.chatLanguageModel = chatLanguageModel;
         this.streamingChatModel = streamingChatModel;
         this.chatMemoryStore = chatMemoryStore;
         this.contextEnricher = contextEnricher;
         this.temporalMemoryService = temporalMemoryService;
+        this.accountBalanceService = accountBalanceService;
     }
 
     private static final String SYSTEM_PROMPT = """
@@ -108,16 +127,29 @@ public class PaSSOrchestratorAgent {
     // ── Two-fold orchestration: Step 1 classifier, Step 3 formatter ──
 
     private static final String CLASSIFIER_PROMPT = """
-            Classify the payment request. Reply with EXACTLY 4 lines, nothing else:
+            Classify the payment request. Reply with these lines, nothing else:
             ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
             BENEFICIARY: person name or none
             AMOUNT: number or 0
             CHANNEL: channel name or auto
+            QUERY: MongoDB filter JSON (only for QUERY_TRANSACTIONS or QUERY_SEARCH, omit for others)
+
+            QUERY rules:
+            - userId is added automatically — NEVER include it.
+            - Allowed fields: instructionType, paymentMethod, status, createdAt
+            - instructionType values: "PASS_MONEY_RECEIVE" (credit/received) or "PASS_MONEY_TRANSFER" (debit/sent)
+            - paymentMethod values: "UPI", "UPI LITE", "NEFT", "RTGS", "IMPS", "CHEQUE"
+            - For date ranges use: {"createdAt": {"$gte": "7d"}} for last 7 days
+            - Use {} for no filter
+
             Examples:
             - "what is my balance" → ACTION: QUERY_BALANCE
-            - "show my transactions" → ACTION: QUERY_TRANSACTIONS
-            - "did I pay Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya
-            - "how much did I send to Arjun" → ACTION: QUERY_SEARCH, BENEFICIARY: Arjun
+            - "show my transactions" → ACTION: QUERY_TRANSACTIONS, QUERY: {}
+            - "show only credits" → ACTION: QUERY_TRANSACTIONS, QUERY: {"instructionType": "PASS_MONEY_RECEIVE"}
+            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, QUERY: {"instructionType": "PASS_MONEY_TRANSFER", "paymentMethod": "UPI"}
+            - "did I pay Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, QUERY: {}
+            - "credits from Arjun" → ACTION: QUERY_SEARCH, BENEFICIARY: Arjun, QUERY: {"instructionType": "PASS_MONEY_RECEIVE"}
+            - "transactions this week" → ACTION: QUERY_TRANSACTIONS, QUERY: {"createdAt": {"$gte": "7d"}}
             """;
 
     private static final String FORMATTER_PROMPT = """
@@ -129,17 +161,12 @@ public class PaSSOrchestratorAgent {
             For queries without [TOOL RESULT], answer using [RELEVANT KNOWLEDGE].
             """;
 
-    interface IntentClassifier {
-        @SystemMessage(CLASSIFIER_PROMPT)
-        String classify(@UserMessage String userMessage);
-    }
-
     interface FormattingSupervisor {
         @SystemMessage(FORMATTER_PROMPT)
-        TokenStream format(@MemoryId String sessionId, @UserMessage String contextWithResult);
+        TokenStream format(@UserMessage String contextWithResult);
     }
 
-    record ParsedIntent(String action, String beneficiary, double amount, String channel) {
+    record ParsedIntent(String action, String beneficiary, double amount, String channel, String queryJson) {
         boolean isTransfer()       { return "TRANSFER".equals(action); }
         boolean isReceive()        { return "RECEIVE".equals(action); }
         boolean isMandate()        { return "MANDATE".equals(action); }
@@ -148,6 +175,12 @@ public class PaSSOrchestratorAgent {
         boolean isQuerySearch()    { return "QUERY_SEARCH".equals(action); }
         boolean isTransactional()  { return isTransfer() || isReceive() || isMandate(); }
         boolean isQueryTool()      { return isQueryBalance() || isQueryTxns() || isQuerySearch(); }
+        boolean hasMongoQuery()    { return queryJson != null && !queryJson.isBlank(); }
+    }
+
+    /** Wraps classifier raw text output together with Step 1 token usage. */
+    record ClassificationResult(String raw, int inputTokens, int outputTokens) {
+        int totalTokens() { return inputTokens + outputTokens; }
     }
 
     @PostConstruct
@@ -208,22 +241,13 @@ public class PaSSOrchestratorAgent {
                 log.warn("✅ Streaming Supervisor Agent initialized in tool-less mode.");
             }
 
-            // Intent classifier (Step 1 of two-fold) — lightweight, no tools, no memory
-            this.intentClassifier = AiServices.builder(IntentClassifier.class)
-                    .chatModel(chatLanguageModel)
-                    .build();
-            log.info("✅ Intent Classifier initialized (two-fold step 1).");
-
-            // Formatting supervisor (Step 3 of two-fold) — streaming, no tools, with memory
+            // Formatting supervisor (Step 3 of two-fold) — streaming, no tools, NO memory.
+            // This agent only summarises tool results in a single turn; it must not
+            // share the Supervisor's chat memory (which would cause message interleaving).
             this.formattingSupervisor = AiServices.builder(FormattingSupervisor.class)
                     .streamingChatModel(streamingChatModel)
-                    .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
-                            .id(memId)
-                            .maxMessages(4)
-                            .chatMemoryStore(chatMemoryStore)
-                            .build())
                     .build();
-            log.info("✅ Formatting Supervisor initialized (two-fold step 3).");
+            log.info("✅ Formatting Supervisor initialized (two-fold step 3, stateless).");
 
             // Register LangChain4j ToolExecutors for every @Tool method in LedgerTools
             for (Method method : ledgerTools.getClass().getDeclaredMethods()) {
@@ -250,6 +274,10 @@ public class PaSSOrchestratorAgent {
         return toolsAvailable;
     }
 
+    private static final String EMBEDDING_UNAVAILABLE_MSG =
+            "I'm sorry, but the AI embedding service (Voyage AI) is currently unreachable. "
+            + "Without it I cannot safely process your request. Please try again in a few moments.";
+
     /**
      * Two-fold synchronous orchestration:
      * Step 1: classify intent via LangChain4j, Step 2: execute tool, Step 3: format via LLM.
@@ -262,22 +290,29 @@ public class PaSSOrchestratorAgent {
             return "I apologize, but the transaction system is currently unavailable. Please try again later or contact support if this issue persists.";
         }
 
+        // Pre-flight: verify Voyage AI embedding service is reachable
+        if (!temporalMemoryService.checkEmbeddingHealth()) {
+            log.error("❌ Session {}: Embedding service unreachable — aborting orchestration", sessionId);
+            return EMBEDDING_UNAVAILABLE_MSG;
+        }
+
         ledgerTools.registerSession(sessionId, userId);
         try {
             // Step 1: Classify
             String classifierCtx = buildClassifierContext(userId, userIntent);
             ParsedIntent intent;
             try {
-                String raw = intentClassifier.classify(classifierCtx);
-                log.info("Session {}: Classifier → {}", sessionId, raw.replace("\n", " | "));
-                intent = parseClassification(raw);
+                ClassificationResult cr = classifyWithRetry(sessionId, classifierCtx);
+                log.info("Session {}: Classifier → {} (step1 tokens: in={} out={})",
+                        sessionId, cr.raw().replace("\n", " | "), cr.inputTokens(), cr.outputTokens());
+                intent = parseClassification(cr.raw());
             } catch (Exception e) {
-                log.warn("Session {}: Classification failed, falling back to supervisor", sessionId, e);
+                log.warn("Session {}: Classification failed after retries, falling back to supervisor", sessionId, e);
                 String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
                 return supervisor.orchestrate(sessionId, enrichedIntent);
             }
 
-            // Step 2: Execute tool
+            // Step 2: Execute tool (transactional OR query)
             String toolResult = null;
             if (intent.isTransactional() && intent.amount() > 0) {
                 try {
@@ -287,18 +322,31 @@ public class PaSSOrchestratorAgent {
                     log.error("Session {}: Tool execution failed", sessionId, e);
                     toolResult = "TOOL_ERROR: " + e.getMessage();
                 }
+            } else if (intent.isQueryTool()) {
+                try {
+                    toolResult = executeToolDirectly(sessionId, intent);
+                    log.info("Session {}: Query result: {}", sessionId, toolResult);
+                } catch (Exception e) {
+                    log.error("Session {}: Query tool execution failed", sessionId, e);
+                    toolResult = "QUERY_ERROR: " + e.getMessage();
+                }
             }
 
             // Step 3: Format reply
-            String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+            // When a tool result is available it is already human-readable — return
+            // it directly to avoid a costly LLM round-trip (mirrors the streaming
+            // path's SyntheticTokenStream optimisation).
+            String reply;
             if (toolResult != null) {
-                enrichedIntent += "\n\n[TOOL RESULT]\n" + toolResult;
+                reply = toolResult;
+                log.info("Session {}: Step 3 — returning tool result directly (skip LLM)", sessionId);
+            } else {
+                String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+                reply = supervisor.orchestrate(sessionId, enrichedIntent);
             }
-            String reply = supervisor.orchestrate(sessionId, enrichedIntent);
             log.debug("✅ Session {}: Two-fold orchestration completed", sessionId);
 
-            Thread.ofVirtual().name("temporal-archive-" + sessionId)
-                    .start(() -> temporalMemoryService.archiveTurn(sessionId, userIntent, reply));
+            submitTemporalArchive(sessionId, userIntent, reply);
 
             return reply;
         } catch (Exception e) {
@@ -329,6 +377,12 @@ public class PaSSOrchestratorAgent {
             throw new IllegalStateException("Transaction tools are currently unavailable. Please try again later.");
         }
 
+        // Pre-flight: verify Voyage AI embedding service is reachable
+        if (!temporalMemoryService.checkEmbeddingHealth()) {
+            log.error("❌ Session {}: Embedding service unreachable — aborting streaming orchestration", sessionId);
+            return new SyntheticTokenStream(EMBEDDING_UNAVAILABLE_MSG);
+        }
+
         ledgerTools.registerSession(sessionId, userId);
 
         // ── Step 1: Intent classification via LangChain4j (lightweight LLM call) ──
@@ -340,9 +394,10 @@ public class PaSSOrchestratorAgent {
         ParsedIntent intent;
         try {
             log.info("Session {}: Step 1 — classifying intent ({} chars)...", sessionId, classifierCtx.length());
-            String raw = intentClassifier.classify(classifierCtx);
-            log.info("Session {}: Classifier output: {}", sessionId, raw.replace("\n", " | "));
-            intent = parseClassification(raw);
+            ClassificationResult cr = classifyWithRetry(sessionId, classifierCtx);
+            log.info("Session {}: Classifier output: {} (step1 tokens: in={} out={})",
+                    sessionId, cr.raw().replace("\n", " | "), cr.inputTokens(), cr.outputTokens());
+            intent = parseClassification(cr.raw());
             log.info("Session {}: Parsed → action={} beneficiary={} amount={} channel={}",
                     sessionId, intent.action(), intent.beneficiary(), intent.amount(), intent.channel());
 
@@ -354,10 +409,12 @@ public class PaSSOrchestratorAgent {
             classifiedData.put("amount", intent.amount());
             classifiedData.put("beneficiary", intent.beneficiary());
             classifiedData.put("channel", intent.channel());
+            classifiedData.put("step1InputTokens", cr.inputTokens());
+            classifiedData.put("step1OutputTokens", cr.outputTokens());
             stageCallback.accept("classified", classifiedData);
 
         } catch (Exception e) {
-            log.warn("Session {}: Classification failed, falling back to direct streaming", sessionId, e);
+            log.warn("Session {}: Classification failed after retries, falling back to direct streaming", sessionId, e);
             stageCallback.accept("fallback", Map.of(
                     "message", "Intent classification unavailable — using direct orchestration.",
                     "step", 1, "totalSteps", 1));
@@ -374,10 +431,12 @@ public class PaSSOrchestratorAgent {
                             intent.action().toLowerCase(), channelLabel),
                     "step", 2, "totalSteps", 3,
                     "action", intent.action(), "channel", channelLabel));
+            long step2Start = System.currentTimeMillis();
             try {
                 log.info("Session {}: Step 2 — executing {} tool directly...", sessionId, intent.action());
                 toolResult = executeToolDirectly(sessionId, intent);
-                log.info("Session {}: Tool result: {}", sessionId, toolResult);
+                long step2ElapsedMs = System.currentTimeMillis() - step2Start;
+                log.info("Session {}: Tool result: {} ({}ms)", sessionId, toolResult, step2ElapsedMs);
 
                 boolean success = toolResult != null && toolResult.startsWith("SUCCESS");
                 String extractedChannel = extractChannelFromResult(toolResult);
@@ -389,33 +448,41 @@ public class PaSSOrchestratorAgent {
                 execData.put("step", 2);
                 execData.put("totalSteps", 3);
                 execData.put("success", success);
+                execData.put("step2ElapsedMs", step2ElapsedMs);
                 if (extractedChannel != null) execData.put("channel", extractedChannel);
                 stageCallback.accept("executed", execData);
 
             } catch (Exception e) {
-                log.error("Session {}: Tool execution failed", sessionId, e);
+                long step2ElapsedMs = System.currentTimeMillis() - step2Start;
+                log.error("Session {}: Tool execution failed ({}ms)", sessionId, step2ElapsedMs, e);
                 toolResult = "TOOL_ERROR: " + e.getMessage();
                 stageCallback.accept("executed", Map.of(
                         "message", "Step 2 · Tool error: " + e.getMessage(),
-                        "step", 2, "totalSteps", 3, "success", false));
+                        "step", 2, "totalSteps", 3, "success", false,
+                        "step2ElapsedMs", step2ElapsedMs));
             }
         } else if (intent.isQueryTool()) {
             stageCallback.accept("executing", Map.of(
                     "message", "Step 2 · Querying your account...",
                     "step", 2, "totalSteps", 3, "action", intent.action()));
+            long step2Start = System.currentTimeMillis();
             try {
                 log.info("Session {}: Step 2 — executing query tool {}...", sessionId, intent.action());
                 toolResult = executeToolDirectly(sessionId, intent);
-                log.info("Session {}: Query result: {}", sessionId, toolResult);
+                long step2ElapsedMs = System.currentTimeMillis() - step2Start;
+                log.info("Session {}: Query result: {} ({}ms)", sessionId, toolResult, step2ElapsedMs);
                 stageCallback.accept("executed", Map.of(
                         "message", "Step 2 · Query complete.",
-                        "step", 2, "totalSteps", 3, "success", true));
+                        "step", 2, "totalSteps", 3, "success", true,
+                        "step2ElapsedMs", step2ElapsedMs));
             } catch (Exception e) {
-                log.error("Session {}: Query tool execution failed", sessionId, e);
+                long step2ElapsedMs = System.currentTimeMillis() - step2Start;
+                log.error("Session {}: Query tool execution failed ({}ms)", sessionId, step2ElapsedMs, e);
                 toolResult = "QUERY_ERROR: " + e.getMessage();
                 stageCallback.accept("executed", Map.of(
                         "message", "Step 2 · Query error: " + e.getMessage(),
-                        "step", 2, "totalSteps", 3, "success", false));
+                        "step", 2, "totalSteps", 3, "success", false,
+                        "step2ElapsedMs", step2ElapsedMs));
             }
         }
 
@@ -446,12 +513,73 @@ public class PaSSOrchestratorAgent {
         return temporalMemoryService;
     }
 
+    /**
+     * Submit a temporal archival task on the bounded virtual thread executor.
+     * If the concurrency cap ({@value MAX_CONCURRENT_ARCHIVES}) is reached,
+     * the task is silently dropped to prevent thread accumulation.
+     */
+    public void submitTemporalArchive(String sessionId, String userIntent, String reply) {
+        if (!archiveSemaphore.tryAcquire()) {
+            log.warn("Session {}: Temporal archive skipped — concurrency cap ({}) reached",
+                    sessionId, MAX_CONCURRENT_ARCHIVES);
+            return;
+        }
+        archiveExecutor.submit(() -> {
+            try {
+                temporalMemoryService.archiveTurn(sessionId, userIntent, reply);
+            } finally {
+                archiveSemaphore.release();
+            }
+        });
+    }
+
     // ── Two-fold helpers ──
 
+    /** Max retries for Step 1 intent classification (Ollama can be flaky on CPU). */
+    private static final int CLASSIFIER_MAX_RETRIES = 1;
+    /** Backoff between classification retries (ms). */
+    private static final long CLASSIFIER_RETRY_DELAY_MS = 2000;
+
     /**
-     * Build a minimal context for the intent classifier (Step 1).
-     * Contains only registered users and the raw request — keeps token count low
-     * so the 3B model can reliably classify.
+     * Classify with retry — attempts {@code CLASSIFIER_MAX_RETRIES + 1} calls
+     * to the LLM before giving up. Calls the model directly (bypassing the
+     * AiServices proxy) so we can capture Step 1 token usage.
+     */
+    private ClassificationResult classifyWithRetry(String sessionId, String classifierCtx) {
+        Exception lastException = null;
+        for (int attempt = 0; attempt <= CLASSIFIER_MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 0) {
+                    log.info("Session {}: Classifier retry {}/{} after {}ms backoff",
+                            sessionId, attempt, CLASSIFIER_MAX_RETRIES, CLASSIFIER_RETRY_DELAY_MS);
+                    Thread.sleep(CLASSIFIER_RETRY_DELAY_MS);
+                }
+                ChatRequest req = ChatRequest.builder()
+                        .messages(List.of(
+                                dev.langchain4j.data.message.SystemMessage.from(CLASSIFIER_PROMPT),
+                                dev.langchain4j.data.message.UserMessage.from(classifierCtx)))
+                        .build();
+                ChatResponse resp = chatLanguageModel.chat(req);
+                TokenUsage tu = resp.tokenUsage();
+                int in  = (tu != null && tu.inputTokenCount()  != null) ? tu.inputTokenCount()  : 0;
+                int out = (tu != null && tu.outputTokenCount() != null) ? tu.outputTokenCount() : 0;
+                return new ClassificationResult(resp.aiMessage().text(), in, out);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Classification interrupted", ie);
+            } catch (Exception e) {
+                lastException = e;
+                log.warn("Session {}: Classifier attempt {} failed: {}",
+                        sessionId, attempt + 1, e.getMessage());
+            }
+        }
+        throw new RuntimeException("Classification failed after " + (CLASSIFIER_MAX_RETRIES + 1) + " attempts", lastException);
+    }
+
+    /**
+     * Build a compact context for the intent classifier (Step 1).
+     * Includes registered users, current balance, last 3 transactions,
+     * and the raw request — kept concise for the 3B model.
      */
     private String buildClassifierContext(String userId, String userIntent) {
         Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
@@ -462,6 +590,21 @@ public class PaSSOrchestratorAgent {
                 sb.append(entry.getValue()).append(", ");
             }
         }
+
+        // Balance — helps classify "can I afford..." / "how much do I have"
+        try {
+            double balance = accountBalanceService.getCurrentBalance(userId);
+            sb.append("\nBalance: ₹").append(String.format("%.0f", balance));
+        } catch (Exception ignored) { }
+
+        // Last 3 transactions — helps classify "did I pay X" / "show history"
+        try {
+            var txns = accountBalanceService.getRecentTransactionSummary(userId, 3);
+            if (!txns.isEmpty()) {
+                sb.append("\nRecent: ").append(String.join("; ", txns));
+            }
+        } catch (Exception ignored) { }
+
         sb.append("\nRequest: ").append(userIntent);
         return sb.toString();
     }
@@ -475,8 +618,15 @@ public class PaSSOrchestratorAgent {
         String beneficiary = "none";
         double amount = 0;
         String channel = "auto";
+        String queryJson = null;
 
-        for (String line : raw.split("\n")) {
+        // Normalize: the 3B model sometimes emits comma-separated key: value
+        // pairs on a single line instead of separate lines. Split on commas
+        // that precede one of the known keywords (lookahead avoids splitting
+        // inside JSON values like {"instructionType":"...", "paymentMethod":"..."}).
+        String normalized = raw.replaceAll("(?i),\\s*(?=(?:ACTION|BENEFICIARY|AMOUNT|CHANNEL|QUERY):)", "\n");
+
+        for (String line : normalized.split("\n")) {
             line = line.trim();
             if (line.toUpperCase().startsWith("ACTION:")) {
                 action = line.substring(7).trim().toUpperCase();
@@ -488,10 +638,12 @@ public class PaSSOrchestratorAgent {
                 } catch (NumberFormatException ignored) { }
             } else if (line.toUpperCase().startsWith("CHANNEL:")) {
                 channel = line.substring(8).trim();
+            } else if (line.toUpperCase().startsWith("QUERY:")) {
+                queryJson = line.substring(6).trim();
             }
         }
 
-        return new ParsedIntent(action, beneficiary, amount, channel);
+        return new ParsedIntent(action, beneficiary, amount, channel, queryJson);
     }
 
     /**
@@ -528,12 +680,14 @@ public class PaSSOrchestratorAgent {
             case "QUERY_BALANCE" -> {
                 toolName = "checkBalance";
             }
-            case "QUERY_TRANSACTIONS" -> {
-                toolName = "recentTransactions";
-            }
-            case "QUERY_SEARCH" -> {
-                toolName = "searchTransactions";
-                args.put("searchTerm", intent.beneficiary());
+            case "QUERY_TRANSACTIONS", "QUERY_SEARCH" -> {
+                // Delegate to LedgerTools.executeMongoQuery() with the LLM-generated filter
+                String searchTerm = intent.isQuerySearch() ? intent.beneficiary() : null;
+                int limit = 10;
+                log.info("Session {}: Executing MongoDB query: filter={} search='{}'",
+                        sessionId, intent.queryJson(), searchTerm);
+                String resolvedUserId = ledgerTools.resolveUserId(sessionId);
+                return ledgerTools.executeMongoQuery(resolvedUserId, intent.queryJson(), searchTerm, limit);
             }
             default -> { return null; }
         }

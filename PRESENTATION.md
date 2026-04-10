@@ -47,6 +47,259 @@ The Reserve Bank of India mandates distinct rails for different transaction prof
 
 ---
 
+## 🧬 Why AI-Native Applications?
+
+Most financial apps today are **AI-augmented** — a traditional system with an LLM bolted on as a chatbot, recommendation sidebar, or post-hoc analytics filter. The core decision-making remains hard-coded rules.
+
+An **AI-native** application inverts this: the LLM is the primary decision engine, constrained by deterministic guardrails (ACID transactions, business rules, regulatory limits). The difference is structural, not cosmetic.
+
+| Aspect | AI-Augmented (Traditional) | AI-Native (This Platform) |
+|--------|---------------------------|---------------------------|
+| Routing logic | Hard-coded `if/else` trees | LLM selects channel from RAG-retrieved RBI rules |
+| Intent parsing | Regex / keyword matching | LLM classifies natural language into structured intents |
+| User interface | Forms with dropdowns | Conversational — user speaks naturally |
+| Memory | None or session cookies | Semantic memory — vector-embedded conversation history |
+| Explainability | Log files | Auditable chain: intent → tool call → result → response |
+| Adaptation | Code change + release cycle | Update RAG corpus or prompt — no redeployment |
+
+### Pros of AI-Native
+
+| Advantage | Detail |
+|-----------|--------|
+| **Natural language UX** | Users say "pay Ramesh ₹50K" instead of filling 5 form fields |
+| **Adaptive routing** | New RBI rule? Update the RAG document — no code change |
+| **Semantic understanding** | "How much do I owe Priya?" triggers a counterparty search, not a keyword match |
+| **Multi-turn context** | LLM remembers prior turns via temporal memory — follow-ups work naturally |
+| **Explainable decisions** | Every tool call, channel selection, and escalation is logged and auditable |
+| **Compound intents** | "Pay Ramesh and show my balance" — LLM can orchestrate multiple tools in one turn |
+
+### Cons of AI-Native
+
+| Challenge | Mitigation in This Platform |
+|-----------|-----------------------------|
+| **Non-determinism** | Temperature 0.1 (near-deterministic); ACID transactions enforce correctness regardless of LLM output |
+| **Latency** | Local LLM avoids network round-trips; token streaming delivers partial responses immediately |
+| **Hallucination risk** | LLM cannot bypass `@Tool` method business rules; amount/channel validation is deterministic Java |
+| **Observability** | Full token metrics (input/output per stage), audit trail per request, SSE stage events |
+| **Cost at scale** | Local Ollama = zero marginal cost; Voyage AI embeddings are the only paid API call |
+| **Testability** | Each `@Tool` is a unit-testable Java method; LLM behavior is constrained by system prompt rules |
+| **Security** | LLM never sees PII (Queryable Encryption); all data stays on-premise (local inference) |
+
+> **Bottom line:** AI-native is not about replacing rules with randomness — it's about letting the LLM handle the *fuzzy* parts (language understanding, channel selection, response formatting) while deterministic code handles the *critical* parts (money movement, validation, compliance).
+
+---
+
+## 🔍 Fraud Detection & Risk Management
+
+The platform features an advanced, AI-native fraud detection system that goes beyond traditional rule-based approaches:
+
+### RAG-Supplemented Fraud Intelligence
+
+Unlike static fraud rules, this system retrieves contextual knowledge from a comprehensive RAG corpus:
+
+| Traditional Approach | AI-Native Approach |
+|---------------------|-------------------|
+| Hard-coded thresholds | Dynamic risk scoring with RAG context |
+| Rule-based signal detection | LLM-powered pattern analysis |
+| Static penalty multipliers | Adaptive risk adjustments based on retrieved knowledge |
+| Manual rule updates | Knowledge base updates without code changes |
+
+### Fraud Analysis Pipeline
+
+```
+User Intent → RAG Retrieval → Signal Detection → Composite Scoring → Action Determination
+```
+
+#### 1. Contextual Knowledge Retrieval
+- Retrieves fraud patterns, regulatory thresholds, and mitigation strategies from embedded documents
+- Uses Voyage AI reranking for relevance scoring
+- Provides domain-specific context for risk assessment
+
+#### 2. Multi-Signal Analysis
+| Signal Type | Detection Logic | Risk Impact |
+|-------------|----------------|-------------|
+| **High-Value Transactions** | Amount > ₹1,00,000 | High risk multiplier (0.8x) |
+| **Geographic Anomalies** | Location mismatch with user profile | Critical risk (0.7x) |
+| **Device Patterns** | New/unrecognized device fingerprints | Medium risk (0.9x) |
+| **Timing Anomalies** | Transactions outside normal hours | Moderate risk (0.85x) |
+
+#### 3. Composite Risk Scoring
+```
+Final Risk Score = Behavioral Similarity × Signal Penalties × RAG Context Weight
+```
+
+#### 4. Intelligent Action Thresholds
+| Risk Score | Action | Outcome |
+|------------|--------|---------|
+| ≥ 0.95 | **APPROVE** | Automatic processing with audit logging |
+| 0.80 - 0.95 | **MONITOR** | Proceed with enhanced monitoring |
+| < 0.80 | **ESCALATE** | Route to Human-in-the-Loop (HITL) for review |
+| Critical signals | **BLOCK** | Immediate rejection with fraud alert |
+
+### Integration with Transaction Flow
+
+Fraud analysis is seamlessly integrated into the payment orchestration:
+
+1. **Pre-Transaction Assessment**: Fraud context analyzed before any balance changes
+2. **Real-time Decision Making**: Actions enforced at tool execution time
+3. **Full Audit Trail**: All signals, scores, and RAG context stored in transaction records
+4. **Explainable Outcomes**: Regulators and users can see *why* decisions were made
+
+### Regulatory Compliance
+
+The system ensures compliance with Indian financial regulations:
+- **AML Screening**: Automatic triggers for transactions above ₹10,00,000
+- **STR Filing**: Suspicious pattern detection with escalation protocols
+- **PAN Requirements**: Validation for transactions above ₹50,000
+- **Cash Ban Enforcement**: Blocks for amounts above ₹2,00,000
+
+This AI-native fraud detection provides intelligent, adaptive protection while maintaining full transparency and regulatory compliance.
+
+---
+
+## 🧰 Technology Introductions
+
+Before diving into how each technology is used, here is what they are and why they were chosen.
+
+### Voyage AI — Semantic Intelligence as a Service
+
+[Voyage AI](https://www.voyageai.com/) is an embedding and reranking model provider founded by researchers from Stanford and MIT. Unlike general-purpose LLMs, Voyage AI specialises in **representation learning** — converting text into dense numerical vectors that capture meaning, not just keywords.
+
+| Model | Purpose | Why It Matters |
+|-------|---------|----------------|
+| `voyage-4` | Dense embedding (1024 dimensions) | State-of-the-art retrieval quality; outperforms OpenAI `text-embedding-3-large` on most benchmarks |
+| `rerank-lite-1` | Cross-encoder reranking | Scores query–document relevance beyond cosine similarity; lightweight enough for real-time use |
+
+**Why Voyage AI over local embeddings?** Small local models (384-dim) lose semantic nuance — "pay ₹50K via NEFT" and "transfer funds through national electronic transfer" may not match. Voyage-4's 1024-dim vectors capture these synonyms. Offloading embeddings to an API also frees local compute for LLM inference.
+
+### LangChain4j — LLM Application Framework for Java
+
+[LangChain4j](https://docs.langchain4j.dev/) is the Java-native port of the LangChain ecosystem. It provides the plumbing to connect LLMs, tools, memory stores, and retrieval pipelines into a cohesive agent — without writing raw HTTP calls or managing prompt serialisation manually.
+
+Key abstractions used in this platform:
+
+| Abstraction | What It Does |
+|-------------|-------------|
+| `AiServices` | Creates a proxy from a Java interface — method calls become LLM interactions with automatic tool dispatch |
+| `@Tool` | Annotates a Java method as callable by the LLM; LangChain4j handles argument marshalling and result injection |
+| `@ToolMemoryId` | Injects session context (e.g., `userId`) into tool calls without exposing it in the prompt |
+| `MessageWindowChatMemory` | Sliding-window memory (N messages) persisted to any store (here: MongoDB) |
+| `StreamingChatModel` | Token-by-token response streaming for real-time SSE delivery |
+| `DefaultToolExecutor` | Executes `@Tool` methods programmatically outside the LLM loop (used for health checks) |
+
+**Why LangChain4j over raw Ollama HTTP calls?** Without LangChain4j, you would manually parse tool-call JSON from LLM output, dispatch to the right method, re-inject the result, and manage conversation memory — hundreds of lines of brittle plumbing that LangChain4j handles declaratively.
+
+### Ollama — Run Any Open LLM Locally
+
+[Ollama](https://ollama.com/) is an open-source runtime for running large language models on consumer and server hardware. It wraps model quantisation, memory management, and inference behind a simple REST API.
+
+| Feature | Detail |
+|---------|--------|
+| **Model library** | 100+ models: Qwen, LLaMA, Mistral, DeepSeek, Gemma, Phi — pull like Docker images |
+| **Quantisation** | Automatic GGUF quantisation (Q4_K_M, Q5_K_M) for CPU-friendly inference |
+| **REST API** | `/api/chat`, `/api/generate`, `/api/embeddings` — standard HTTP, no SDK lock-in |
+| **Docker-native** | Official `ollama/ollama` image; runs as a sidecar service in `docker-compose.yaml` |
+| **Model management** | `ollama pull`, `ollama list`, `ollama rm` — declarative model lifecycle |
+
+**This platform uses Qwen 2.5** (`qwen2.5:latest`) — a multilingual, tool-calling-capable model from Alibaba Cloud. It supports function calling natively, making it compatible with LangChain4j's `@Tool` dispatch without prompt hacking.
+
+**Why Ollama over cloud LLMs?** For a financial platform handling PII and payment data, sending prompts to third-party servers (OpenAI, Anthropic) creates compliance risk. Ollama keeps all inference on-premise with zero marginal cost per token.
+
+---
+
+## 🎭 Different Roles of the LLM
+
+The LLM in this platform is not a single monolithic chatbot. It plays **four distinct roles**, each with a different system prompt, memory scope, and trust boundary:
+
+### Role 1: Classifier (Stage 1)
+
+| Property | Value |
+|----------|-------|
+| **Purpose** | Extract structured intent from natural language |
+| **Input** | User message + compact context (balance, recent txns) |
+| **Output** | 4 fields: `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL` |
+| **Memory** | None — stateless, single-shot |
+| **Trust level** | Low — output is parsed and validated; invalid output triggers retry |
+
+```
+User: "pay ₹5000 to Ramesh via UPI"
+  → ACTION: TRANSFER
+  → BENEFICIARY: Ramesh
+  → AMOUNT: 5000
+  → CHANNEL: UPI
+```
+
+The classifier is a **direct `ChatRequest`** (not an AiServices proxy) so we can capture exact input/output token counts for observability.
+
+### Role 2: Tool Orchestrator (Stage 2)
+
+| Property | Value |
+|----------|-------|
+| **Purpose** | Decide which `@Tool` methods to call and with what arguments |
+| **Input** | RAG-enriched intent (balance, knowledge chunks, conversation history) |
+| **Output** | Tool calls dispatched via LangChain4j, then a formatted response |
+| **Memory** | 6-message sliding window (persisted to MongoDB) |
+| **Trust level** | Medium — LLM decides tool calls, but `@Tool` methods enforce business rules |
+
+The `Supervisor` and `StreamingSupervisor` AiServices proxies have full `@Tool` access. LangChain4j intercepts the LLM's tool-call requests, executes the corresponding Java method, injects the result back into the conversation, and lets the LLM format the final response.
+
+```
+LLM thinks: "User wants to transfer ₹5000 to Ramesh. I should call transferFunds."
+  → LangChain4j intercepts tool call
+  → Executes transferFunds("Ramesh", 5000) — ACID commit
+  → Result injected: "SUCCESS: ₹5,000.00 transferred to Ramesh via UPI"
+  → LLM formats: "Done! ₹5,000 has been transferred to Ramesh via UPI."
+```
+
+### Role 3: Response Formatter
+
+| Property | Value |
+|----------|-------|
+| **Purpose** | Convert raw tool results and data into human-readable, contextual responses |
+| **Input** | Tool execution results + conversation context |
+| **Output** | Natural language response with relevant details |
+| **Memory** | Shared with Tool Orchestrator (same AiServices proxy) |
+| **Trust level** | Low — formatting only; cannot alter committed transactions |
+
+The formatter role is **merged with the Tool Orchestrator** in a single LLM interaction. After the tool returns its result, the LLM uses the same turn to compose the response — no separate call needed.
+
+### Role 4: Conversational Agent (General Queries)
+
+| Property | Value |
+|----------|-------|
+| **Purpose** | Answer questions about payments, channels, regulations, and account activity |
+| **Input** | RAG-enriched context with payment channel docs, regulatory frameworks |
+| **Output** | Informative response grounded in retrieved knowledge |
+| **Memory** | 6-message sliding window |
+| **Trust level** | Medium — grounded in RAG; no tool execution for informational queries |
+
+```
+User: "What are the NEFT settlement timings?"
+  → RAG retrieves neft-payment-channel.txt
+  → LLM answers from retrieved knowledge (no tool call)
+```
+
+### Role Boundaries
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    LLM Trust Boundaries                     │
+│                                                             │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────┐  ┌────────┐  │
+│  │Classifier│  │Tool          │  │Response  │  │Conver- │  │
+│  │          │  │Orchestrator  │  │Formatter │  │sational│  │
+│  │ Stateless│  │ +Tools       │  │ (merged) │  │ +RAG   │  │
+│  │ Low trust│  │ Med trust    │  │ Low trust│  │Med trust│  │
+│  └──────────┘  └──────────────┘  └──────────┘  └────────┘  │
+│       │               │                            │        │
+│       ▼               ▼                            ▼        │
+│  Parse & validate  @Tool methods             RAG grounding  │
+│  (retry on fail)   enforce rules             (no halluc.)   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## 🏗️ Architecture Overview
 
 ```
@@ -58,19 +311,20 @@ The Reserve Bank of India mandates distinct rails for different transaction prof
 ┌─────────────────────────▼───────────────────────────────────────────┐
 │                   API GATEWAY (Java 21 + Spring Boot)               │
 │                                                                     │
-│  ┌─────────────┐   ┌──────────────┐   ┌─────────────────────────┐  │
-│  │  Stage 1     │   │  Stage 2      │   │  Stage 3               │  │
-│  │  CLASSIFY    │──▶│  EXECUTE      │──▶│  FORMAT                │  │
-│  │  (LLM Call)  │   │  (Java Only)  │   │  (LLM Call or Bypass)  │  │
-│  └──────┬───────┘   └──────┬────────┘   └────────────────────────┘  │
+│  ┌─────────────┐   ┌──────────────────────────────────────────┐     │
+│  │  Stage 1     │   │  Stage 2 — LLM-Led Tool Orchestration    │     │
+│  │  CLASSIFY    │──▶│  LLM decides tools → LangChain4j execs   │     │
+│  │  (LLM Call)  │   │  → LLM formats response                 │     │
+│  └──────┬───────┘   └──────┬───────────────────────────────────┘     │
 │         │                  │                                         │
 │  ┌──────▼───────┐   ┌──────▼────────────────────────────────┐       │
-│  │ Intent Only: │   │ Tool Execution:                       │       │
+│  │ Intent Only: │   │ @Tool Methods (via AiServices proxy): │       │
 │  │ ACTION       │   │ • transferFunds → ACID commit         │       │
 │  │ BENEFICIARY  │   │ • receiveFunds  → ACID commit         │       │
 │  │ AMOUNT       │   │ • switchMandate → ACID commit         │       │
 │  │ CHANNEL      │   │ • checkBalance  → read                │       │
-│  └──────────────┘   │ • executeMongoQuery → filtered read   │       │
+│  └──────────────┘   │ • recentTransactions → filtered read  │       │
+│                     │ • searchTransactions → search read    │       │
 │                     └───────────────────────────────────────┘       │
 └───────┬──────────────────┬──────────────────────┬───────────────────┘
         │                  │                      │
@@ -81,15 +335,14 @@ The Reserve Bank of India mandates distinct rails for different transaction prof
    └──────────┘    └──────────────┘    └────────────────────┘
 ```
 
-### Three-Stage Pipeline — LLM Is Not the Bottleneck
+### Two-Stage Pipeline — LLM-Led Tool Orchestration
 
 | Stage | What Happens | LLM Involved? |
 |-------|-------------|----------------|
 | **Stage 1: Classify** | LLM reads user intent → outputs 4 fields: ACTION, BENEFICIARY, AMOUNT, CHANNEL | ✅ Single LLM call |
-| **Stage 2: Execute** | Deterministic Java tool execution — ACID transactions, MongoDB queries, balance checks | ❌ No LLM |
-| **Stage 3: Format** | For general queries: LLM formats response. For tool results: bypassed (direct return) | ✅/❌ Conditional |
+| **Stage 2: Orchestrate** | LLM decides which `@Tool` to call → LangChain4j executes → LLM formats the response | ✅ LLM + Tool execution |
 
-> **Key insight:** The classifier never generates code, queries, or tool calls. MongoDB filters are built programmatically from user keywords — making the system reliable regardless of LLM quality.
+> **Key insight:** The LLM has full tool access via LangChain4j AiServices, but `@Tool` methods enforce all business rules — amount validation, channel selection, ACID commits. The LLM orchestrates; Java enforces.
 
 ---
 
@@ -226,21 +479,18 @@ LangChain4j (Java) is the **nervous system** connecting the LLM, tools, memory, 
 | **AiServices Proxy** | `Supervisor` and `StreamingSupervisor` interfaces backed by LLM with automatic tool dispatch |
 | **Chat Memory** | `MessageWindowChatMemory` (6-message window) persisted to MongoDB via `MongoChatMemoryStore` |
 | **Token Streaming** | `StreamingChatModel` → `TokenStream` → SSE events → browser renders word-by-word |
-| **DefaultToolExecutor** | Registered at boot for deterministic tool dispatch in the two-fold path |
 
-### Tool Registry
+### LLM-Led Tool Dispatch
 
-```java
-@PostConstruct
-public void init() {
-    // Register every @Tool method as a callable executor
-    for (Method method : ledgerTools.getClass().getDeclaredMethods()) {
-        if (method.isAnnotationPresent(Tool.class)) {
-            toolExecutors.put(method.getName(),
-                new DefaultToolExecutor(ledgerTools, method));
-        }
-    }
-}
+The LLM decides which tools to call. LangChain4j intercepts the tool-call request, executes the corresponding `@Tool` Java method, injects the result back into the conversation, and the LLM composes the final response — all in a single interaction:
+
+```
+User: "pay ₹5000 to Ramesh"
+  → LLM receives RAG-enriched prompt
+  → LLM emits tool call: transferFunds("Ramesh", 5000)
+  → LangChain4j executes @Tool method (ACID commit)
+  → Result: "SUCCESS: ₹5,000.00 transferred via UPI"
+  → LLM formats: "Done! ₹5,000 transferred to Ramesh via UPI."
 ```
 
 ### Registered Tools
@@ -305,11 +555,12 @@ ContextEnricher.buildEnrichedIntent()
 
 | LLM Does | LLM Does NOT |
 |----------|-------------|
-| Classify user intent (4 fields) | Generate MongoDB queries |
-| Select payment channel from RAG context | Execute transactions |
-| Format human-readable responses | Access PII directly |
-| Tag confidence (HIGH/MEDIUM/LOW) | Override business rules |
-| Ask clarification on LOW confidence | Bypass amount/channel validation |
+| Classify user intent (4 fields) | Execute raw MongoDB queries |
+| Decide which `@Tool` to call and with what arguments | Override `@Tool` business rules |
+| Select payment channel from RAG context | Access PII directly |
+| Format human-readable responses from tool results | Bypass amount/channel validation |
+| Handle compound intents (multiple tools per turn) | Commit transactions — `@Tool` methods do |
+| Answer questions from RAG-retrieved knowledge | Invent facts not in the RAG corpus |
 
 ### Streaming Architecture
 
@@ -357,7 +608,7 @@ The UI displays per-request token metrics in the sidebar:
 | **PII Protection** | MongoDB Queryable Encryption on `email`, `phone`, `bank_account` |
 | **Data Sovereignty** | Local LLM — no prompts leave the infrastructure |
 | **Tool Safety** | `@Tool` methods enforce business rules; LLM cannot bypass validation |
-| **Query Security** | `executeMongoQuery()` whitelists fields; always injects `userId` — no cross-user data access |
+| **Query Security** | `@Tool` methods always scope queries to the authenticated `userId` — no cross-user data access |
 | **Fraud Detection** | Behavioral vector similarity scoring via `FraudContextService` |
 | **HITL Escalation** | Any decision can be appealed; operators approve/deny/override |
 | **Audit Trail** | Every tool call, channel decision, and escalation logged in `pass_audit` |
@@ -457,10 +708,12 @@ open http://localhost:3000   # Chat UI
 
 ## 🎯 Key Takeaways
 
-1. **AI is the routing engine** — no hard-coded `if/else` for channel selection; the LLM reads RAG-retrieved RBI rules and decides
-2. **LLM is NOT the bottleneck** — classifier outputs only 4 fields; all query filtering and tool execution is deterministic Java
-3. **MongoDB is the unified brain** — vector search, ACID ledger, encrypted PII, session memory, audit trail — one technology, four isolated databases
-4. **Voyage AI provides semantic quality** — high-dimensional embeddings + reranking without competing for local compute
-5. **Local LLM = data sovereignty** — no payment data or PII ever leaves the infrastructure
-6. **Every decision is auditable** — tool calls, channel choices, escalations, and overrides logged with session correlation
-7. **Humans stay in the loop** — any decision can be appealed; operators have full approve/deny/override control
+1. **AI-native, not AI-augmented** — the LLM is the decision engine, not a bolt-on chatbot; deterministic Java enforces safety
+2. **LLM-led tool orchestration** — the LLM decides which `@Tool` to call; LangChain4j executes; `@Tool` methods enforce business rules
+3. **Four LLM roles** — Classifier (intent), Orchestrator (tool dispatch), Formatter (response), Conversational Agent (RAG Q&A)
+4. **MongoDB is the unified brain** — vector search, ACID ledger, encrypted PII, session memory, audit trail — one technology, four isolated databases
+5. **Voyage AI provides semantic quality** — 1024-dim embeddings + reranking without competing for local compute
+6. **Ollama keeps data sovereign** — no payment data or PII ever leaves the infrastructure; zero marginal cost per token
+7. **LangChain4j is the glue** — AiServices proxy, `@Tool` binding, chat memory, streaming — declarative orchestration in Java
+8. **Every decision is auditable** — tool calls, channel choices, escalations, and overrides logged with session correlation
+9. **Humans stay in the loop** — any decision can be appealed; operators have full approve/deny/override control

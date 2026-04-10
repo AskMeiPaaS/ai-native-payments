@@ -130,6 +130,30 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
   const [accountError, setAccountError] = useState<string | null>(null);
   const [isAccountLoading, setIsAccountLoading] = useState(!userProfile);
   const [lastTokenStats, setLastTokenStats] = useState<TokenStats | null>(null);
+  const [lastBehavioralScore, setLastBehavioralScore] = useState<{
+    riskScore: number;
+    behavioralScore: number;
+    action: string;
+    signals: string[];
+  } | null>(null);
+
+  // Parse behavioral score from agent response
+  const parseBehavioralScore = (responseText: string) => {
+    const fraudScoreMatch = responseText.match(/Fraud Score:\s*([\d.]+)\s*\(([^)]+)\)/i);
+    if (fraudScoreMatch) {
+      const riskScore = parseFloat(fraudScoreMatch[1]);
+      const action = fraudScoreMatch[2].toUpperCase();
+      // For now, behavioral score is same as risk score since we don't have separate behavioral scoring
+      // Signals are not included in the response yet, so we'll leave them empty
+      return {
+        riskScore,
+        behavioralScore: riskScore, // Placeholder
+        action,
+        signals: [] // Placeholder - could be parsed from response if added
+      };
+    }
+    return null;
+  };
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Resolve effective userId for API calls
@@ -524,6 +548,11 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       step3OutputTokens: jsonData.step3OutputTokens ?? 0,
                     });
                   }
+                  // Parse and set behavioral score from response
+                  const behavioralScore = parseBehavioralScore(fullResponse);
+                  if (behavioralScore) {
+                    setLastBehavioralScore(behavioralScore);
+                  }
                   setMessages((prev) => {
                     // Use channel from response text, or fall back to what was detected in a stage event
                     const existingMsg = prev.find((m) => m.id === agentMessageId);
@@ -625,6 +654,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
         backendConnected={mongoConnected}
         onNewChat={handleNewChat}
         lastTokenStats={lastTokenStats}
+        lastBehavioralScore={lastBehavioralScore}
       />
 
       <div className="chat-main">

@@ -15,7 +15,8 @@ A comprehensive guide to the AI-native financial orchestration platform built fo
 7. **Responsible AI & PAIR** - privacy, fairness, explainability alignment
 8. **Human-in-the-Loop (HITL)** - user appeals, operator dashboard, escalation APIs
 9. **Database Initialization** - Queryable Encryption setup and seed data
-10. **Performance & Resources** - connection pooling, timeouts, virtual threads
+10. **Fraud Detection & Risk Assessment** - RAG-supplemented fraud analysis, behavioral scoring, risk thresholds
+11. **Performance & Resources** - connection pooling, timeouts, virtual threads
 11. **Build & Deployment** - Maven, Docker, containerization
 12. **Testing & Quality** - unit tests and modular feature coverage
 13. **Troubleshooting** - common errors, degraded-mode behavior, and fixes
@@ -1658,7 +1659,85 @@ public class QueryableEncryptionService {
 
 ---
 
-## 10. Performance & Resource Management
+## 10. Fraud Detection & Risk Assessment
+
+### RAG-Supplemented Fraud Analysis
+
+The platform implements an intelligent fraud detection system that combines behavioral telemetry with contextual knowledge retrieved from RAG:
+
+#### FraudContextService Architecture
+
+```java
+@Service
+public class FraudContextService {
+    private final RagService ragService;
+    private final EmbeddingModel embeddingModel;
+
+    public FraudAnalysisResult analyzeFraudContext(String userId, String userIntent, double behavioralScore) {
+        // Retrieve fraud patterns from RAG
+        String ragContext = ragService.retrieveContext("fraud detection " + userIntent, 2);
+        
+        // Analyze fraud signals
+        List<String> fraudSignals = detectFraudSignals(userIntent, behavioralScore);
+        
+        // Compute composite risk score
+        double riskScore = calculateCompositeRisk(behavioralScore, fraudSignals);
+        
+        // Determine action
+        FraudAction action = determineAction(riskScore, fraudSignals);
+        
+        return new FraudAnalysisResult(riskScore, behavioralScore, fraudSignals, action, ragContext);
+    }
+}
+```
+
+#### Risk Scoring Algorithm
+
+| Signal Type | Penalty Multiplier | Trigger Condition |
+|-------------|-------------------|-------------------|
+| HIGH_VALUE_TRANSACTION | 0.8 | Amount > ₹1,00,000 |
+| GEO_ANOMALY_DETECTED | 0.7 | Location mismatch with profile |
+| NEW_DEVICE_PATTERN | 0.9 | Unrecognized device fingerprint |
+| UNUSUAL_TIMING | 0.85 | Outside normal activity hours |
+
+**Composite Score Formula:**
+```
+riskScore = behavioralScore × signalPenalties
+```
+
+#### Action Thresholds
+
+| Risk Score Range | Action | Behavior |
+|------------------|--------|----------|
+| ≥ 0.95 | APPROVE | Proceed with transaction |
+| 0.80 - 0.95 | MONITOR | Log and proceed, flag for review |
+| < 0.80 | ESCALATE | Route to HITL for human approval |
+| Critical signals | BLOCK | Immediate rejection |
+
+#### Integration with Transaction Flow
+
+Fraud analysis is integrated into `MongoLedgerService.commitSwitchAtomic()`:
+
+1. **Pre-commit Analysis**: `FraudContextService.analyzeFraudContext()` called before balance debits
+2. **Action Enforcement**: 
+   - `BLOCK` → Transaction rejected with fraud alert
+   - `ESCALATE` → HITL flag set, transaction held for approval
+   - `MONITOR/APPROVE` → Transaction proceeds with audit logging
+3. **Audit Trail**: All fraud signals, RAG context, and risk scores stored in `AgentReasoning` domain
+
+#### RAG Knowledge Base
+
+The fraud detection corpus includes:
+- Behavioral anomaly detection patterns
+- Regulatory compliance thresholds (AML, STR filing)
+- Automatic block triggers for suspicious activities
+- Risk mitigation strategies and escalation protocols
+
+This ensures context-aware fraud prevention with full explainability and regulatory compliance.
+
+---
+
+## 11. Performance & Resource Management
 
 ### LLM Token Metrics (`OllamaMetricsScheduler`)
 
@@ -1735,7 +1814,7 @@ HttpClient httpClient = HttpClient.newBuilder()
 
 ---
 
-## 11. Build & Deployment
+## 12. Build & Deployment
 
 ### Maven Build
 
@@ -1788,7 +1867,7 @@ app.http.request.timeout.seconds=30
 
 ---
 
-## 12. Testing & Quality
+## 13. Testing & Quality
 
 ### Unit Tests (24 tests - all passing)
 
@@ -1905,7 +1984,7 @@ curl -X POST http://localhost:8080/api/v1/operator/escalations/{escalation_id}/a
 
 ---
 
-## 13. Troubleshooting Guide
+## 14. Troubleshooting Guide
 
 ### Build Fails with Lombok Errors
 
@@ -2003,7 +2082,7 @@ docker logs api-gateway | grep 'Supervisor Agent initialized'
 
 ---
 
-## 14. Architecture Principles
+## 15. Architecture Principles
 
 | Principle | Application |
 |-----------|:----------:|
@@ -2020,7 +2099,7 @@ docker logs api-gateway | grep 'Supervisor Agent initialized'
 
 ---
 
-## 15. Future Enhancements
+## 16. Future Enhancements
 
 - [ ] Spring Security + JWT authentication (currently no auth — sessionId is client-provided)
 - [ ] Production LLM upgrade from `qwen2.5:3b` to a larger or API-hosted model for higher tool-call accuracy

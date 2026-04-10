@@ -27,6 +27,12 @@ interface SidebarProps {
     step3InputTokens?: number;
     step3OutputTokens?: number;
   } | null;
+  lastBehavioralScore?: {
+    riskScore: number;
+    behavioralScore: number;
+    action: string;
+    signals: string[];
+  } | null;
 }
 
 export default function Sidebar({
@@ -36,6 +42,7 @@ export default function Sidebar({
   backendConnected = true,
   onNewChat,
   lastTokenStats,
+  lastBehavioralScore,
 }: SidebarProps) {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     if (typeof window === 'undefined') {
@@ -85,6 +92,23 @@ export default function Sidebar({
     if (!sessionId || sessionId === 'N/A') return 'Not initialized';
     return sessionId;
   }, [sessionId]);
+
+  // Helper functions for behavioral score styling
+  const getRiskColor = (score: number): string => {
+    if (score >= 0.95) return 'success';
+    if (score >= 0.80) return 'warning';
+    return 'error';
+  };
+
+  const getActionColor = (action: string): string => {
+    switch (action.toUpperCase()) {
+      case 'APPROVE': return 'success';
+      case 'MONITOR': return 'warning';
+      case 'ESCALATE': return 'warning';
+      case 'BLOCK': return 'error';
+      default: return 'neutral';
+    }
+  };
 
   return (
     <aside className="sidebar">
@@ -185,6 +209,37 @@ export default function Sidebar({
           </div>
         ) : (
           <div className="token-stats-empty">Send a message to see metrics.</div>
+        )}
+
+        {/* Behavioral scoring from last transaction */}
+        <div className="sidebar-label" style={{ marginTop: 'var(--space-3)' }}>Last Transaction Fraud Analysis</div>
+        {lastBehavioralScore ? (
+          <div className="behavioral-stats-grid">
+            <div className="behavioral-stat">
+              <span className="behavioral-stat__label">Risk Score</span>
+              <span className={`behavioral-stat__value behavioral-stat__value--${getRiskColor(lastBehavioralScore.riskScore)}`}>
+                {lastBehavioralScore.riskScore.toFixed(2)}
+              </span>
+            </div>
+            <div className="behavioral-stat">
+              <span className="behavioral-stat__label">Behavioral Score</span>
+              <span className="behavioral-stat__value">{lastBehavioralScore.behavioralScore.toFixed(2)}</span>
+            </div>
+            <div className="behavioral-stat">
+              <span className="behavioral-stat__label">Action</span>
+              <span className={`behavioral-stat__value behavioral-stat__value--${getActionColor(lastBehavioralScore.action)}`}>
+                {lastBehavioralScore.action}
+              </span>
+            </div>
+            <div className="behavioral-stat behavioral-stat--signals">
+              <span className="behavioral-stat__label">Signals</span>
+              <span className="behavioral-stat__value">
+                {lastBehavioralScore.signals.length > 0 ? lastBehavioralScore.signals.join(', ') : 'None'}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="behavioral-stats-empty">Complete a transaction to see fraud analysis.</div>
         )}
       </div>
 

@@ -28,13 +28,46 @@ Traditional payment apps wrap AI around a fixed rule engine. Here the inverse is
 | **Payment routing** | LLM reads RAG-retrieved RBI channel rules and decides. No Java `if/else`. |
 | **Channel selection** | Only channels found in the retrieved knowledge chunks are offered to the LLM (`[APPROVED CHANNELS]`). |
 | **Channel validation** | `LedgerTools.validateChannelForAmount()` cross-checks the LLM's chosen channel against RBI amount rules at tool-call time. On mismatch it returns a `CHANNEL_MISMATCH:` sentinel with the correct channel so the LLM automatically re-invokes with the corrected value. |
-| **Fraud context** | `FraudContextService` scores behavioural telemetry; score influences the HITL threshold, not routing. |
+| **Fraud context** | `FraudContextService` integrates RAG-retrieved fraud patterns with behavioral telemetry scoring; composite risk assessment determines APPROVE/MONITOR/ESCALATE/BLOCK actions, with full audit trail in transaction records. |
 | **Ledger execution** | `@Tool`-annotated Java methods expose ACID-safe operations the LLM can call by name. All three tools (`transferFunds`, `receiveFunds`, `switchMandate`) commit to MongoDB via `MongoLedgerService`. |
 | **Memory** | Temporal turns are vector-embedded and recalled per session. RAG knowledge is reranked per query. |
 | **Human oversight** | Any decision can be appealed; operators approve / deny / override via the HITL dashboard. |
 | **Token performance** | `OllamaMetricsScheduler` passively records real `TokenUsage` from every completed request. The SSE `complete` event carries `inputTokens`, `outputTokens`, `totalTokens`, and `elapsedMs`; the `Sidebar` component renders a live token/s panel. |
 | **Confidence assessment** | LLM responses include `[Confidence: HIGH/MEDIUM/LOW]` tags; LOW confidence triggers clarification questions instead of tool calls. |
 | **Error handling** | Contextual error messages (e.g., "AI took too long" instead of stack traces) for LLM failures; friendly SSE error events prevent verbose exceptions from reaching users. |
+
+---
+
+## 🔍 Enhanced Fraud Detection with RAG Supplementation
+
+The platform features an advanced fraud detection system that combines behavioral telemetry with contextual intelligence from RAG-retrieved knowledge:
+
+### Fraud Analysis Components
+
+| Component | Implementation | Purpose |
+|-----------|----------------|---------|
+| **FraudContextService** | RAG-integrated analysis engine | Retrieves fraud patterns from knowledge base, analyzes behavioral signals, computes composite risk scores |
+| **Risk Scoring** | Composite algorithm | Behavioral similarity penalized by fraud signals (HIGH_VALUE_TRANSACTION: *0.8, GEO_ANOMALY: *0.7, etc.) |
+| **Action Thresholds** | Dynamic decision logic | APPROVE ≥0.95, MONITOR 0.80-0.95, ESCALATE <0.80, BLOCK for critical signals |
+| **Audit Integration** | MongoLedgerService | Fraud analysis results stored in transaction records with AgentReasoning snapshots |
+| **Signal Detection** | Pattern matching | HIGH_VALUE_TRANSACTION, GEO_ANOMALY_DETECTED, NEW_DEVICE_PATTERN, UNUSUAL_TIMING |
+
+### Fraud Knowledge Base
+
+The RAG corpus includes comprehensive fraud detection policies covering:
+- Behavioral anomaly patterns
+- Regulatory compliance thresholds
+- Automatic block triggers for suspicious activities
+- Risk mitigation strategies
+
+### Transaction Flow with Fraud Checks
+
+1. User intent parsed by Supervisor Agent
+2. FraudContextService analyzes context before balance debits
+3. Risk score determines action: APPROVE (proceed), MONITOR (log), ESCALATE (HITL), BLOCK (reject)
+4. All decisions logged in audit trail with RAG context and fraud signals
+
+This ensures intelligent, context-aware fraud prevention while maintaining full explainability and compliance.
 
 ---
 

@@ -151,8 +151,17 @@ public class LedgerTools {
 
         log.info("Transfer tool invoked: session={} user={} → beneficiary={} amount=₹{} via {}",
                 memoryId, userId, beneficiary, amount, targetBank);
-        fraudContextService.evaluateTelemetryContext("{}",
-                "Transfer ₹" + amount + " to " + beneficiary + " via " + targetBank);
+
+        // Perform fraud analysis
+        var fraudResult = fraudContextService.analyzeFraudContext(
+                memoryId, userId, amount, beneficiary, targetBank);
+
+        // Check if transaction should be blocked
+        if (fraudResult.action() == FraudContextService.FraudAction.BLOCK) {
+            return String.format(
+                    "TRANSFER_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                    fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+        }
 
         try {
             // Resolve beneficiary to a registered user for P2P credit
@@ -166,8 +175,9 @@ public class LedgerTools {
             PaymentContext ctx = new PaymentContext(memoryId, userId, beneficiary, amount, targetBank, recipientUserId);
             PaymentResult result = paymentSwitchRouter.route(targetBank).transfer(ctx);
             return String.format(
-                    "SUCCESS: ₹%.2f transferred to %s via %s. Reference: %s. Remaining balance: ₹%.2f.",
-                    amount, beneficiary, result.channel(), result.txnId(), result.resultingBalance()
+                    "SUCCESS: ₹%.2f transferred to %s via %s. Reference: %s. Remaining balance: ₹%.2f. Fraud Score: %.2f (%s)",
+                    amount, beneficiary, result.channel(), result.txnId(), result.resultingBalance(),
+                    fraudResult.riskScore(), fraudResult.action().toString().toLowerCase()
             );
         } catch (IllegalArgumentException ex) {
             log.warn("Transfer blocked: {}", ex.getMessage());
@@ -216,12 +226,24 @@ public class LedgerTools {
 
         log.info("Receive funds tool invoked: session={} user={} ₹{} via {}", memoryId, userId, amount, channel);
 
+        // Perform fraud analysis for incoming funds
+        var fraudResult = fraudContextService.analyzeFraudContext(
+                memoryId, userId, amount, "External Payer", channel);
+
+        // Check if transaction should be blocked
+        if (fraudResult.action() == FraudContextService.FraudAction.BLOCK) {
+            return String.format(
+                    "RECEIVE_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                    fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+        }
+
         try {
             PaymentContext ctx = new PaymentContext(memoryId, userId, "External Payer", amount, channel, null);
             PaymentResult result = paymentSwitchRouter.route(channel).receive(ctx);
             return String.format(
-                    "SUCCESS: ₹%.2f received via %s. Your new account balance is ₹%.2f.",
-                    amount, result.channel(), result.resultingBalance()
+                    "SUCCESS: ₹%.2f received via %s. Your new account balance is ₹%.2f. Fraud Score: %.2f (%s)",
+                    amount, result.channel(), result.resultingBalance(),
+                    fraudResult.riskScore(), fraudResult.action().toString().toLowerCase()
             );
         } catch (IllegalArgumentException ex) {
             log.warn("Receive blocked: {}", ex.getMessage());
@@ -291,10 +313,22 @@ public class LedgerTools {
                                @P("Mandate details or routing instructions as provided by the user") String mandateDetails) {
         String userId = resolveUserId(memoryId);
         log.info("Mandate switch tool invoked for session {} user {}: {}", memoryId, userId, bankName);
-        fraudContextService.evaluateTelemetryContext("{}", "Switch mandate to " + bankName);
+
+        // Perform fraud analysis for mandate switch
+        var fraudResult = fraudContextService.analyzeFraudContext(
+                memoryId, userId, 0.0, bankName, "MANDATE");
+
+        // Check if transaction should be blocked
+        if (fraudResult.action() == FraudContextService.FraudAction.BLOCK) {
+            return String.format(
+                    "MANDATE_BLOCKED: Fraud detection blocked this mandate switch. Risk score: %.2f, Signals: %s",
+                    fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+        }
+
         try {
             String txnId = mongoLedgerService.commitMandateAtomic(memoryId, userId, bankName, mandateDetails);
-            return "SUCCESS: Mandate switch initiated securely for " + bankName + ". Reference: " + txnId + ". Details: " + mandateDetails;
+            return "SUCCESS: Mandate switch initiated securely for " + bankName + ". Reference: " + txnId + ". Details: " + mandateDetails + String.format(". Fraud Score: %.2f (%s)",
+                    fraudResult.riskScore(), fraudResult.action().toString().toLowerCase());
         } catch (IllegalArgumentException ex) {
             log.warn("Mandate switch blocked: {}", ex.getMessage());
             return "MANDATE_BLOCKED: " + ex.getMessage();

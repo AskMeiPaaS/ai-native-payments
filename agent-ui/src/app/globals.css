@@ -305,6 +305,48 @@ a:hover { opacity: 0.8; }
   padding: var(--space-2) 0;
 }
 
+/* Behavioral stats grid — similar to token stats but with action colors */
+.behavioral-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+.behavioral-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--space-2) var(--space-3);
+}
+.behavioral-stat--signals {
+  grid-column: 1 / -1; /* Span full width for signals */
+}
+.behavioral-stat__label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-3);
+}
+.behavioral-stat__value {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text);
+}
+.behavioral-stat__value--success { color: var(--success); }
+.behavioral-stat__value--warning { color: var(--warning); }
+.behavioral-stat__value--error { color: var(--error); }
+.behavioral-stat__value--neutral { color: var(--text-2); }
+.behavioral-stats-empty {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  padding: var(--space-2) 0;
+}
+
 /* Backend status pill */
 .backend-pill {
   display: flex;

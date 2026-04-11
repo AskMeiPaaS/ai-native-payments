@@ -8,6 +8,7 @@ import com.ayedata.service.AccountBalanceService;
 import com.ayedata.fraud.FraudAction;
 import com.ayedata.fraud.FraudAgentOrchestrator;
 import com.ayedata.fraud.FraudAnalysisResult;
+import com.ayedata.hitl.service.HitlEscalationService;
 import com.ayedata.service.MongoLedgerService;
 import com.ayedata.domain.FinancialData;
 import com.ayedata.domain.TransactionRecord;
@@ -45,6 +46,7 @@ public class LedgerTools {
     private static final String SESSION_REGISTRY = "session_registry";
 
     private final FraudAgentOrchestrator fraudAgentOrchestrator;
+    private final HitlEscalationService hitlEscalationService;
     private final PaymentSwitchRouter paymentSwitchRouter;
     private final MongoLedgerService mongoLedgerService;
     private final AccountBalanceService accountBalanceService;
@@ -68,12 +70,14 @@ public class LedgerTools {
     }
 
     public LedgerTools(FraudAgentOrchestrator fraudAgentOrchestrator,
+                       HitlEscalationService hitlEscalationService,
                        PaymentSwitchRouter paymentSwitchRouter,
                        MongoLedgerService mongoLedgerService,
                        AccountBalanceService accountBalanceService,
                        @Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate,
                        @Qualifier("memoryMongoTemplate") MongoTemplate memoryMongoTemplate) {
         this.fraudAgentOrchestrator = fraudAgentOrchestrator;
+        this.hitlEscalationService = hitlEscalationService;
         this.paymentSwitchRouter = paymentSwitchRouter;
         this.mongoLedgerService = mongoLedgerService;
         this.accountBalanceService = accountBalanceService;
@@ -171,8 +175,18 @@ public class LedgerTools {
         // Check if transaction should be blocked
         if (fraudResult.action() == FraudAction.BLOCK) {
             return String.format(
-                    "TRANSFER_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                    "TRANSFER_BLOCKED: This transaction has been permanently blocked due to high fraud risk. Risk score: %.2f, Signals: %s",
                     fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+        }
+
+        // Check if transaction should be escalated to HITL
+        if (fraudResult.action() == FraudAction.ESCALATE) {
+            String escalationId = hitlEscalationService.freezeStateAndEscalate(memoryId,
+                    String.format("Transfer ₹%.2f to %s — fraud risk score %.2f. Signals: %s",
+                            amount, beneficiary, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+            return String.format(
+                    "TRANSFER_ESCALATED: This transfer has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f.",
+                    escalationId, fraudResult.riskScore());
         }
 
         try {
@@ -187,9 +201,8 @@ public class LedgerTools {
             PaymentContext ctx = new PaymentContext(memoryId, userId, beneficiary, amount, targetBank, recipientUserId);
             PaymentResult result = paymentSwitchRouter.route(targetBank).transfer(ctx);
             return String.format(
-                    "SUCCESS: ₹%.2f transferred to %s via %s. Reference: %s. Remaining balance: ₹%.2f. Fraud Score: %.2f (%s)",
-                    amount, beneficiary, result.channel(), result.txnId(), result.resultingBalance(),
-                    fraudResult.riskScore(), fraudResult.action().toString().toLowerCase()
+                    "SUCCESS: ₹%.2f transferred to %s via %s. Ref: %s. Balance: ₹%.2f",
+                    amount, beneficiary, result.channel(), result.txnId(), result.resultingBalance()
             );
         } catch (IllegalArgumentException ex) {
             log.warn("Transfer blocked: {}", ex.getMessage());
@@ -240,17 +253,26 @@ public class LedgerTools {
         // Check if transaction should be blocked
         if (fraudResult.action() == FraudAction.BLOCK) {
             return String.format(
-                    "RECEIVE_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                    "RECEIVE_BLOCKED: This transaction has been permanently blocked due to high fraud risk. Risk score: %.2f, Signals: %s",
                     fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+        }
+
+        // Check if transaction should be escalated to HITL
+        if (fraudResult.action() == FraudAction.ESCALATE) {
+            String escalationId = hitlEscalationService.freezeStateAndEscalate(memoryId,
+                    String.format("Receive ₹%.2f — fraud risk score %.2f. Signals: %s",
+                            amount, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+            return String.format(
+                    "RECEIVE_ESCALATED: This transaction has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f.",
+                    escalationId, fraudResult.riskScore());
         }
 
         try {
             PaymentContext ctx = new PaymentContext(memoryId, userId, "External Payer", amount, channel, null);
             PaymentResult result = paymentSwitchRouter.route(channel).receive(ctx);
             return String.format(
-                    "SUCCESS: ₹%.2f received via %s. Your new account balance is ₹%.2f. Fraud Score: %.2f (%s)",
-                    amount, result.channel(), result.resultingBalance(),
-                    fraudResult.riskScore(), fraudResult.action().toString().toLowerCase()
+                    "SUCCESS: ₹%.2f received via %s. Balance: ₹%.2f",
+                    amount, result.channel(), result.resultingBalance()
             );
         } catch (IllegalArgumentException ex) {
             log.warn("Receive blocked: {}", ex.getMessage());
@@ -331,8 +353,18 @@ public class LedgerTools {
         // Check if transaction should be blocked
         if (fraudResult.action() == FraudAction.BLOCK) {
             return String.format(
-                    "MANDATE_BLOCKED: Fraud detection blocked this mandate switch. Risk score: %.2f, Signals: %s",
+                    "MANDATE_BLOCKED: This mandate switch has been permanently blocked due to high fraud risk. Risk score: %.2f, Signals: %s",
                     fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+        }
+
+        // Check if mandate should be escalated to HITL
+        if (fraudResult.action() == FraudAction.ESCALATE) {
+            String escalationId = hitlEscalationService.freezeStateAndEscalate(memoryId,
+                    String.format("Mandate switch to %s — fraud risk score %.2f. Signals: %s",
+                            bankName, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+            return String.format(
+                    "MANDATE_ESCALATED: This mandate switch has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f.",
+                    escalationId, fraudResult.riskScore());
         }
 
         try {

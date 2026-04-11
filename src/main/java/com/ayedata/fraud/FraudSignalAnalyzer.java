@@ -55,7 +55,7 @@ public class FraudSignalAnalyzer {
             Instant lookbackStart = Instant.now().minus(fraudConfig.getBehavioralLookbackDays(), ChronoUnit.DAYS);
             Query query = new Query(Criteria.where("userId").is(userId)
                     .and("createdAt").gte(lookbackStart)
-                    .and("status").in("COMPLETED", "SUCCESS"))
+                    .and("status").in("COMPLETED", "SUCCESS", "SETTLED"))
                     .with(Sort.by(Sort.Direction.DESC, "createdAt"))
                     .limit(50);
 
@@ -175,8 +175,10 @@ public class FraudSignalAnalyzer {
             return FraudAction.APPROVE;
         } else if (riskScore >= fraudConfig.getThresholdMonitor()) {
             return FraudAction.MONITOR;
-        } else {
+        } else if (riskScore >= fraudConfig.getThresholdEscalate()) {
             return FraudAction.ESCALATE;
+        } else {
+            return FraudAction.BLOCK;
         }
     }
 }

@@ -25,11 +25,17 @@ public class FraudConfig {
     @Value("${app.fraud.multiplier.unusual-timing:0.9}")
     private double multiplierUnusualTiming;
 
-    @Value("${app.fraud.threshold.approve:0.95}")
+    @Value("${app.fraud.threshold.approve:0.90}")
     private double thresholdApprove;
 
     @Value("${app.fraud.threshold.monitor:0.80}")
     private double thresholdMonitor;
+
+    @Value("${app.fraud.threshold.escalate:0.65}")
+    private double thresholdEscalate;
+
+    @Value("${app.fraud.threshold.block:0.65}")
+    private double thresholdBlock;
 
     @Value("${app.fraud.baseline-score:0.95}")
     private double baselineScore;
@@ -50,6 +56,8 @@ public class FraudConfig {
     public double getMultiplierUnusualTiming() { return multiplierUnusualTiming; }
     public double getThresholdApprove() { return thresholdApprove; }
     public double getThresholdMonitor() { return thresholdMonitor; }
+    public double getThresholdEscalate() { return thresholdEscalate; }
+    public double getThresholdBlock() { return thresholdBlock; }
     public double getBaselineScore() { return baselineScore; }
     public int getBehavioralLookbackDays() { return behavioralLookbackDays; }
     public int getBehavioralMinTransactions() { return behavioralMinTransactions; }

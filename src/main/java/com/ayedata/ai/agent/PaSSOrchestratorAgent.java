@@ -5,6 +5,7 @@ import com.ayedata.config.MongoChatMemoryStore;
 import com.ayedata.fraud.FraudAction;
 import com.ayedata.fraud.FraudAgentOrchestrator;
 import com.ayedata.fraud.FraudAnalysisResult;
+import com.ayedata.hitl.service.HitlEscalationService;
 import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.TemporalMemoryService;
@@ -25,16 +26,20 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 
 /**
  * PaSS Orchestrator Agent: Supervisor backed by MongoDB chat memory,
@@ -55,12 +60,18 @@ public class PaSSOrchestratorAgent {
 
     private final LedgerTools ledgerTools;
     private final FraudAgentOrchestrator fraudAgentOrchestrator;
+    private final HitlEscalationService hitlEscalationService;
     private final OllamaChatModel chatLanguageModel;
     private final OllamaStreamingChatModel streamingChatModel;
     private final MongoChatMemoryStore chatMemoryStore;
     private final ContextEnricher contextEnricher;
     private final TemporalMemoryService temporalMemoryService;
     private final AccountBalanceService accountBalanceService;
+
+    /** Well-defined payment channels from env (e.g. "UPI Lite,UPI,NEFT,RTGS,IMPS,Cheque"). */
+    private final List<String> supportedChannels;
+    /** Upper-cased set for fast validation of classifier output. */
+    private final Set<String> supportedChannelsUpper;
 
     private Supervisor supervisor;
     private StreamingSupervisor streamingSupervisor;
@@ -82,20 +93,27 @@ public class PaSSOrchestratorAgent {
 
     public PaSSOrchestratorAgent(LedgerTools ledgerTools,
                                  FraudAgentOrchestrator fraudAgentOrchestrator,
+                                 HitlEscalationService hitlEscalationService,
                                  OllamaChatModel chatLanguageModel,
                                  OllamaStreamingChatModel streamingChatModel,
                                  MongoChatMemoryStore chatMemoryStore,
                                  ContextEnricher contextEnricher,
                                  TemporalMemoryService temporalMemoryService,
-                                 AccountBalanceService accountBalanceService) {
+                                 AccountBalanceService accountBalanceService,
+                                 @Value("${app.payment.channels:UPI Lite,UPI,NEFT,RTGS,IMPS,Cheque}") String channelsCsv) {
         this.ledgerTools = ledgerTools;
         this.fraudAgentOrchestrator = fraudAgentOrchestrator;
+        this.hitlEscalationService = hitlEscalationService;
         this.chatLanguageModel = chatLanguageModel;
         this.streamingChatModel = streamingChatModel;
         this.chatMemoryStore = chatMemoryStore;
         this.contextEnricher = contextEnricher;
         this.temporalMemoryService = temporalMemoryService;
         this.accountBalanceService = accountBalanceService;
+        this.supportedChannels = Arrays.stream(channelsCsv.split(","))
+                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+        this.supportedChannelsUpper = supportedChannels.stream()
+                .map(String::toUpperCase).collect(Collectors.toSet());
     }
 
     private static final String SYSTEM_PROMPT = """
@@ -132,28 +150,43 @@ public class PaSSOrchestratorAgent {
 
     // ── Two-fold orchestration: Step 1 classifier, Step 3 formatter ──
 
-    private static final String CLASSIFIER_PROMPT = """
+    /**
+     * Build a dynamic classifier prompt that includes the well-defined channel list
+     * from the PAYMENT_CHANNELS env var. The LLM MUST return one of these or UNKNOWN.
+     */
+    private String buildClassifierPrompt() {
+        String channelList = String.join(", ", supportedChannels);
+        return """
             Classify the payment request. Reply with EXACTLY these five lines, nothing else:
             ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
             BENEFICIARY: person name or none
             AMOUNT: number or 0
-            CHANNEL: channel name or auto
+            CHANNEL: one of [%s] or UNKNOWN
             CONFIDENCE: HIGH or MEDIUM or LOW
 
             Rules:
+            - CHANNEL must be EXACTLY one of: %s. Never invent channel names.
+            - If the user explicitly names a channel (e.g. "via UPI", "through NEFT"), return that channel.
+            - If the user does NOT specify a channel, return CHANNEL: UNKNOWN.
             - When a person's name appears in a query, use QUERY_SEARCH with BENEFICIARY set to that person.
             - Use QUERY_TRANSACTIONS for listing/filtering transactions without a specific person.
             - Use QUERY_BALANCE only for balance inquiries with no person mentioned.
-            - CONFIDENCE: HIGH when all fields are unambiguous; MEDIUM when one is inferred; LOW when vague.
+            - CONFIDENCE: HIGH only for general questions unrelated to payments/banking.
+            - CONFIDENCE: MEDIUM when at least the action is clear (TRANSFER, RECEIVE, QUERY_BALANCE, QUERY_TRANSACTIONS, QUERY_SEARCH).
+            - CONFIDENCE: LOW when the request is vague or unclear.
 
             Examples:
-            - "what is my balance" → ACTION: QUERY_BALANCE, CONFIDENCE: HIGH
-            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: HIGH
-            - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CONFIDENCE: HIGH
-            - "pay 5000 to Ramesh via UPI" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: HIGH
-            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CONFIDENCE: HIGH
-            - "send money to Ramesh" → ACTION: TRANSFER, BENEFICIARY: Ramesh, AMOUNT: 0, CONFIDENCE: LOW
-            """;
+            - "what is my balance" → ACTION: QUERY_BALANCE, CONFIDENCE: MEDIUM
+            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: MEDIUM
+            - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CONFIDENCE: MEDIUM
+            - "pay 5000 to Ramesh via UPI" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: MEDIUM
+            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "send money to Ramesh" → ACTION: TRANSFER, BENEFICIARY: Ramesh, AMOUNT: 0, CHANNEL: UNKNOWN, CONFIDENCE: LOW
+            - "hello, how are you" → ACTION: QUERY, CONFIDENCE: HIGH
+            - "what is PaSS" → ACTION: QUERY, CONFIDENCE: HIGH
+            - "transfer 2000 to Priya" → ACTION: TRANSFER, AMOUNT: 2000, BENEFICIARY: Priya, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            """.formatted(channelList, channelList);
+    }
 
     private static final String FORMATTER_PROMPT = """
             You are PaSS, an Indian banking payment assistant.
@@ -319,6 +352,15 @@ public class PaSSOrchestratorAgent {
                 return supervisor.orchestrate(sessionId, enrichedIntent);
             }
 
+            // Channel clarification: if transactional and channel is UNKNOWN, ask user
+            if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
+                log.info("Session {}: Channel not specified — asking user to confirm", sessionId);
+                String channelList = String.join(", ", supportedChannels);
+                return String.format(
+                    "I need to know which payment channel to use. Please reply with one of: %s.\n" +
+                    "For example: \"via UPI\" or \"use NEFT\".", channelList);
+            }
+
             // Step 2: Fraud detection (transactional intents only)
             if (intent.isTransactional()) {
                 log.info("Session {}: Step 2 — fraud analysis (amount=₹{} beneficiary={} channel={})",
@@ -331,8 +373,17 @@ public class PaSSOrchestratorAgent {
 
                 if (fraudResult.action() == FraudAction.BLOCK) {
                     return String.format(
-                            "TRANSACTION_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                            "TRANSACTION_BLOCKED: This transaction has been permanently blocked due to high fraud risk (score: %.2f). No further action is possible for this request. Signals: %s",
                             fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+                }
+
+                if (fraudResult.action() == FraudAction.ESCALATE) {
+                    String escalationId = hitlEscalationService.freezeStateAndEscalate(sessionId,
+                            String.format("Fraud risk score %.2f below threshold. Signals: %s",
+                                    fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+                    return String.format(
+                            "TRANSACTION_ESCALATED: This transaction has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f. A compliance officer will review and decide within the SLA window.",
+                            escalationId, fraudResult.riskScore());
                 }
             }
 
@@ -450,6 +501,20 @@ public class PaSSOrchestratorAgent {
             return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
         }
 
+        // ── Channel clarification: ask user to pick when channel is UNKNOWN ──
+        if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
+            log.info("Session {}: Channel UNKNOWN — sending channel_required to frontend", sessionId);
+            Map<String, Object> channelData = new java.util.LinkedHashMap<>();
+            channelData.put("message", "Please select a payment channel to proceed.");
+            channelData.put("channels", supportedChannels);
+            stageCallback.accept("channel_required", channelData);
+
+            String channelList = String.join(", ", supportedChannels);
+            return new SyntheticTokenStream(String.format(
+                "I need to know which payment channel to use for this transaction. " +
+                "Please choose one: %s.", channelList));
+        }
+
         // ── Step 2: Fraud detection (transactional intents only) ──
         if (needsFraud) {
             stageCallback.accept("fraud_analyzing", Map.of(
@@ -485,8 +550,20 @@ public class PaSSOrchestratorAgent {
                 fraudData.put("blocked", true);
                 stageCallback.accept("fraud_analyzed", fraudData);
                 return new SyntheticTokenStream(String.format(
-                        "TRANSACTION_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                        "TRANSACTION_BLOCKED: This transaction has been permanently blocked due to high fraud risk (score: %.2f). No further action is possible for this request. Signals: %s",
                         fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+            }
+
+            if (fraudResult.action() == FraudAction.ESCALATE) {
+                String escalationId = hitlEscalationService.freezeStateAndEscalate(sessionId,
+                        String.format("Fraud risk score %.2f below threshold. Signals: %s",
+                                fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+                fraudData.put("escalated", true);
+                fraudData.put("escalationId", escalationId);
+                stageCallback.accept("fraud_analyzed", fraudData);
+                return new SyntheticTokenStream(String.format(
+                        "TRANSACTION_ESCALATED: This transaction has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f. A compliance officer will review and decide within the SLA window.",
+                        escalationId, fraudResult.riskScore()));
             }
 
             stageCallback.accept("fraud_analyzed", fraudData);
@@ -544,6 +621,8 @@ public class PaSSOrchestratorAgent {
         }
 
         // LLM-led path (HIGH confidence, general queries, or deterministic fallback failure)
+        // Recalculate totalSteps: LLM path has no formatting step
+        totalSteps = needsFraud ? 3 : 2;
         stageCallback.accept("executing", Map.of(
                 "message", String.format("Step %d · AI orchestrating tool execution...", execStep),
                 "step", execStep, "totalSteps", totalSteps,
@@ -607,7 +686,7 @@ public class PaSSOrchestratorAgent {
                 }
                 ChatRequest req = ChatRequest.builder()
                         .messages(List.of(
-                                dev.langchain4j.data.message.SystemMessage.from(CLASSIFIER_PROMPT),
+                                dev.langchain4j.data.message.SystemMessage.from(buildClassifierPrompt()),
                                 dev.langchain4j.data.message.UserMessage.from(classifierCtx)))
                         .build();
                 ChatResponse resp = chatLanguageModel.chat(req);
@@ -668,7 +747,7 @@ public class PaSSOrchestratorAgent {
         String action = "QUERY";
         String beneficiary = "none";
         double amount = 0;
-        String channel = "auto";
+        String channel = "UNKNOWN";
         String confidence = "HIGH";
 
         // Normalize: models sometimes emit comma-separated key: value pairs
@@ -686,7 +765,20 @@ public class PaSSOrchestratorAgent {
                     amount = Double.parseDouble(line.substring(7).trim().replaceAll("[^0-9.]", ""));
                 } catch (NumberFormatException ignored) { }
             } else if (line.toUpperCase().startsWith("CHANNEL:")) {
-                channel = line.substring(8).trim();
+                String rawCh = line.substring(8).trim();
+                // Validate against supported channels; treat "auto"/"auto-select" as UNKNOWN
+                if ("auto".equalsIgnoreCase(rawCh) || "auto-select".equalsIgnoreCase(rawCh)
+                        || "unknown".equalsIgnoreCase(rawCh) || rawCh.isBlank()) {
+                    channel = "UNKNOWN";
+                } else if (supportedChannelsUpper.contains(rawCh.toUpperCase())) {
+                    // Map back to the canonical casing from supportedChannels
+                    channel = supportedChannels.stream()
+                            .filter(c -> c.equalsIgnoreCase(rawCh))
+                            .findFirst().orElse(rawCh);
+                } else {
+                    log.warn("Classifier returned unrecognised channel '{}' — treating as UNKNOWN", rawCh);
+                    channel = "UNKNOWN";
+                }
             } else if (line.toUpperCase().startsWith("CONFIDENCE:")) {
                 confidence = line.substring(11).trim().toUpperCase();
             }
@@ -708,7 +800,7 @@ public class PaSSOrchestratorAgent {
         if (!intent.isTransactional() || intent.amount() <= 0) {
             return "Step 1 · Classified as: " + intent.action();
         }
-        String channel = "auto".equalsIgnoreCase(intent.channel()) ? "auto-select" : intent.channel();
+        String channel = "UNKNOWN".equalsIgnoreCase(intent.channel()) ? "pending" : intent.channel();
         return switch (intent.action()) {
             case "TRANSFER" -> String.format("Step 1 · Transfer ₹%.0f to %s (%s)", intent.amount(), intent.beneficiary(), channel);
             case "RECEIVE"  -> String.format("Step 1 · Receive ₹%.0f (%s)", intent.amount(), channel);

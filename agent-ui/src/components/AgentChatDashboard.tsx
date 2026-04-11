@@ -17,6 +17,10 @@ interface Message {
   meta?: string;
   channel?: string; // LLM+RAG selected payment channel (e.g. "UPI", "NEFT", "RTGS")
   stageChannel?: string; // Channel detected during two-fold orchestration stages
+  fraudScore?: number;   // Fraud risk score from fraud_analyzed stage
+  fraudAction?: string;  // Fraud action: APPROVE, MONITOR, ESCALATE, BLOCK
+  stageLines?: string[]; // Accumulated completed-stage summaries shown in progress bubble
+  channelOptions?: string[]; // Available channels when LLM asks user to pick
 }
 
 /** Canonical channel names the LLM or tool response may mention. */
@@ -147,6 +151,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
     signals: string[];
   } | null>(null);
   const [stageBanner, setStageBanner] = useState<StageBannerRow[]>([]);
+  const [chatBlocked, setChatBlocked] = useState(false);
 
   // Resolve effective userId for API calls (declared early for localStorage keys)
   const effectiveUserId = userId || 'demo-user';
@@ -254,7 +259,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
       const response = await fetch('/api/v1/agent/health');
       if (response.ok) {
         const data = await response.json();
-        setMongoConnected(data.mongodbStatus === true);
+        setMongoConnected(data.status === 'UP');
       } else {
         setMongoConnected(false);
       }
@@ -338,6 +343,8 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
       setMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
       setStageBanner([]);
+      setLastTokenStats(null);
+      setLastBehavioralScore(null);
 
       // Add wait message (agent)
       const waitMsg: Message = {
@@ -476,8 +483,9 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   const toneLookup: Record<string, 'info' | 'success' | 'warn' | 'error'> = {
                     classifying: 'info',
                     classified: 'info',
+                    channel_required: 'warn',
                     fraud_analyzing: 'warn',
-                    fraud_analyzed: jsonData.blocked ? 'error' : 'success',
+                    fraud_analyzed: (jsonData.blocked || jsonData.escalated) ? 'error' : 'success',
                     executing: 'warn',
                     executed: jsonData.success === false ? 'error' : 'success',
                     formatting: 'info',
@@ -489,17 +497,63 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   appendActivity(progressPrefix + stageName, stageMsg, toneLookup[stageName] || 'info');
 
                   // Update wait message with current stage
+                  // "Done" stages append a summary line; "active" stages update the live line.
                   const stageIcon = stageName === 'fraud_analyzing' ? '🛡️'
                     : stageName === 'fraud_analyzed' ? '🛡️'
                     : stageName === 'executing' ? '⚡'
                     : stageName === 'formatting' ? '✍️'
                     : '🔍';
+
+                  // Build a compact summary for completed ("done") stage events
+                  let doneLine: string | null = null;
+                  switch (stageName) {
+                    case 'classified': {
+                      const p: string[] = [];
+                      if (jsonData.action) p.push(jsonData.action);
+                      if (jsonData.amount) p.push(`₹${jsonData.amount}`);
+                      if (jsonData.beneficiary && jsonData.beneficiary !== 'none') p.push(`→ ${jsonData.beneficiary}`);
+                      doneLine = `🔍 ${p.join(' ') || stageMsg}`;
+                      if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
+                        doneLine += `\n📡 ${jsonData.channel} via RAG+LLM`;
+                      }
+                      break;
+                    }
+                    case 'fraud_analyzed':
+                      if (jsonData.blocked) {
+                        doneLine = `🚫 BLOCKED · Risk ${(jsonData.riskScore * 100).toFixed(0)}% — Transaction stopped`;
+                        setChatBlocked(true);
+                      } else if (jsonData.escalated) {
+                        doneLine = `⚠️ ESCALATED · Risk ${(jsonData.riskScore * 100).toFixed(0)}% — Sent to HITL operator (${jsonData.escalationId})`;
+                      } else {
+                        doneLine = jsonData.action
+                          ? `🛡️ Fraud: ${jsonData.action} · Risk ${(jsonData.riskScore * 100).toFixed(0)}%`
+                          : `🛡️ ${stageMsg}`;
+                      }
+                      break;
+                    case 'executed':
+                      doneLine = `⚡ ${stageMsg}`;
+                      if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
+                        doneLine += `\n📡 ${jsonData.channel} via RAG+LLM`;
+                      }
+                      break;
+                    case 'channel_required':
+                      doneLine = `📡 ${stageMsg}`;
+                      break;
+                  }
+
                   setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === waitMsgId
-                        ? { ...msg, content: `${stageIcon} ${stageMsg}` }
-                        : msg
-                    )
+                    prev.map((msg) => {
+                      if (msg.id !== waitMsgId) return msg;
+                      const lines = msg.stageLines ?? [];
+                      const nextLines = doneLine ? [...lines, doneLine] : lines;
+                      const activeLine = doneLine ? '' : `${stageIcon} ${stageMsg}`;
+                      const content = [...nextLines, activeLine].filter(Boolean).join('\n');
+                      const extras: Partial<Message> = { content, stageLines: nextLines };
+                      if (stageName === 'channel_required' && jsonData.channels) {
+                        extras.channelOptions = jsonData.channels;
+                      }
+                      return { ...msg, ...extras };
+                    })
                   );
 
                   // Incrementally update token stats for the classified stage
@@ -546,11 +600,22 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
 
                   // If channel was detected during classification or execution, remember it
                   // so the final chat bubble gets the channel badge even before streaming starts.
-                  if (jsonData.channel && jsonData.channel !== 'auto' && jsonData.channel !== 'auto-select') {
+                  if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
                     setMessages((prev) =>
                       prev.map((msg) =>
                         msg.id === waitMsgId
                           ? { ...msg, stageChannel: jsonData.channel }
+                          : msg
+                      )
+                    );
+                  }
+
+                  // Capture fraud score on the wait message so the final bubble can show it
+                  if (stageName === 'fraud_analyzed' && jsonData.riskScore !== undefined) {
+                    setMessages((prev) =>
+                      prev.map((msg) =>
+                        msg.id === waitMsgId
+                          ? { ...msg, fraudScore: jsonData.riskScore, fraudAction: jsonData.action }
                           : msg
                       )
                     );
@@ -576,7 +641,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       if (jsonData.beneficiary) parts.push(`→ ${jsonData.beneficiary}`);
                       if (jsonData.confidence) parts.push(`(${Math.round(jsonData.confidence * 100)}%)`);
                       upsert('classify', '🔍', 'Classification', parts.join(' ') || stageMsg, 'done');
-                      if (jsonData.channel && jsonData.channel !== 'auto' && jsonData.channel !== 'auto-select') {
+                      if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
                         upsert('channel', '📡', 'Channel', `${jsonData.channel} via RAG+LLM`, 'done');
                       }
                       break;
@@ -589,7 +654,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                         jsonData.action
                           ? `${jsonData.action} · Risk ${(jsonData.riskScore * 100).toFixed(0)}%`
                           : stageMsg,
-                        jsonData.blocked ? 'error' : 'done');
+                        (jsonData.blocked || jsonData.escalated) ? 'error' : 'done');
                       break;
                     case 'executing':
                       upsert('execute', '⚡', 'Tool Execution', stageMsg, 'active');
@@ -597,12 +662,15 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                     case 'executed':
                       upsert('execute', '⚡', 'Tool Execution', stageMsg,
                         jsonData.success === false ? 'error' : 'done');
-                      if (jsonData.channel && jsonData.channel !== 'auto' && jsonData.channel !== 'auto-select') {
+                      if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
                         upsert('channel', '📡', 'Channel', `${jsonData.channel} via RAG+LLM`, 'done');
                       }
                       break;
                     case 'formatting':
                       upsert('format', '✍️', 'Response', 'Generating response…', 'active');
+                      break;
+                    case 'channel_required':
+                      upsert('channel', '📡', 'Channel', 'Awaiting user selection…', 'active');
                       break;
                     case 'fallback':
                       upsert('fallback', '⚠️', 'Fallback', stageMsg, 'done');
@@ -649,9 +717,12 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           : msg
                       );
                     } else {
-                      // Create new streaming message (first chunk) — carry over stageChannel
+                      // Create new streaming message (first chunk) — carry over stageChannel + fraud
                       const waitMsg2 = prev.find((m) => m.id === waitMsgId);
                       const inheritedChannel = waitMsg2?.stageChannel;
+                      const inheritedFraudScore = waitMsg2?.fraudScore;
+                      const inheritedFraudAction = waitMsg2?.fraudAction;
+                      const inheritedChannelOptions = waitMsg2?.channelOptions;
                       return [
                         ...prev.filter((m) => m.id !== waitMsgId),
                         {
@@ -660,6 +731,8 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           content: fullResponse,
                           timestamp: new Date(),
                           ...(inheritedChannel ? { channel: inheritedChannel } : {}),
+                          ...(inheritedFraudScore !== undefined ? { fraudScore: inheritedFraudScore, fraudAction: inheritedFraudAction } : {}),
+                          ...(inheritedChannelOptions?.length ? { channelOptions: inheritedChannelOptions } : {}),
                         },
                       ];
                     }
@@ -781,6 +854,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
     }
     setMessages([]);
     setStageBanner([]);
+    setChatBlocked(false);
     setLastTokenStats(null);
     setLastBehavioralScore(null);
     resetActivityLog('New chat', 'Chat history cleared. Start a new conversation.', 'info');
@@ -797,9 +871,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
     <div className="agent-chat-dashboard">
       <Sidebar
         sessionId={sessionId}
-        messageCount={messages.filter((m) => m.role === 'user').length}
         activityLogs={activityLogs}
-        backendConnected={mongoConnected}
         onNewChat={handleNewChat}
         lastTokenStats={lastTokenStats}
         lastBehavioralScore={lastBehavioralScore}
@@ -879,7 +951,20 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   >
                     <div className={`message-bubble message-bubble--${msg.role}`}>
                       <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'break-word' }}>{msg.content}</div>
-                      {msg.role === 'agent' && (msg.channel || msg.stageChannel || msg.meta) && (
+                      {msg.role === 'agent' && msg.channelOptions && msg.channelOptions.length > 0 && (
+                        <div className="channel-picker">
+                          {msg.channelOptions.map((ch) => (
+                            <button
+                              key={ch}
+                              className="channel-picker__btn"
+                              onClick={() => handleSendMessage(`via ${ch}`)}
+                            >
+                              📡 {ch}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {msg.role === 'agent' && (msg.channel || msg.stageChannel || msg.fraudScore !== undefined || msg.meta) && (
                         <div className="bubble-footer">
                           {(msg.channel || msg.stageChannel) && (
                             <div className="channel-badge" data-ch={msg.channel || msg.stageChannel}>
@@ -888,12 +973,21 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                               <span className="channel-badge__suffix">via RAG+LLM</span>
                             </div>
                           )}
+                          {msg.fraudScore !== undefined && (
+                            <div className="fraud-badge" data-action={msg.fraudAction?.toUpperCase()}>
+                              <span className="fraud-badge__icon">🛡️</span>
+                              <span className="fraud-badge__label">
+                                {(msg.fraudScore * 100).toFixed(0)}%
+                              </span>
+                              <span className="fraud-badge__action">{msg.fraudAction}</span>
+                            </div>
+                          )}
                           {msg.meta && (
                             <div className="message-meta">{msg.meta}</div>
                           )}
                         </div>
                       )}
-                      {msg.role === 'agent' && msg.content && !msg.content.startsWith('⏳') && !msg.content.startsWith('🔍') && !msg.content.startsWith('⚡') && !msg.content.startsWith('✍️') && (
+                      {msg.role === 'agent' && msg.content && !msg.content.startsWith('⏳') && !msg.content.startsWith('🔍') && !msg.content.startsWith('⚡') && !msg.content.startsWith('✍️') && !msg.content.startsWith('🛡️') && !msg.content.startsWith('📡') && (
                         <HitlAppealButton sessionId={sessionId} />
                       )}
                     </div>
@@ -934,7 +1028,22 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
               <div ref={messagesEndRef} />
             </div>
 
-            <InputBar onSendMessage={handleSendMessage} isLoading={isLoading} />
+            {!mongoConnected && (
+              <div className="offline-banner">
+                ⚠️ PaSS is offline — chat is unavailable until the backend reconnects.
+              </div>
+            )}
+            {chatBlocked && mongoConnected && (
+              <div className="offline-banner blocked-banner">
+                🚫 Transaction blocked — this session has been terminated due to high fraud risk. Start a new chat to continue.
+              </div>
+            )}
+            <InputBar
+              onSendMessage={handleSendMessage}
+              isLoading={isLoading}
+              disabled={!mongoConnected || chatBlocked}
+              placeholder={chatBlocked ? 'Session ended — start a new chat' : undefined}
+            />
           </div>
         ) : (
           <HitlOperatorDashboard />

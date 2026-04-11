@@ -203,6 +203,21 @@ a:hover { opacity: 0.8; }
   color: var(--text-3);
 }
 
+.sidebar-label--toggle {
+  all: unset;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-3);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  user-select: none;
+}
+.sidebar-label--toggle:hover { color: var(--text-1); }
+
 .session-box {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -235,6 +250,14 @@ a:hover { opacity: 0.8; }
 }
 
 /* Activity items */
+.activity-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
 .activity-item {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--r-md);
@@ -303,6 +326,24 @@ a:hover { opacity: 0.8; }
   font-size: var(--text-xs);
   color: var(--text-3);
   padding: var(--space-2) 0;
+}
+
+/* Token subsection grouping — categories within Token Stats */
+.token-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.token-subsection + .token-subsection {
+  margin-top: var(--space-2);
+}
+.token-subsection__header {
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-2);
+  padding-left: 2px;
 }
 
 /* Behavioral stats grid — similar to token stats but with action colors */
@@ -386,6 +427,24 @@ a:hover { opacity: 0.8; }
   transition: all var(--fast) var(--ease);
 }
 .theme-btn:hover { background: var(--bg-hover); border-color: var(--border-strong); color: var(--text); }
+
+/* Offline banner — shown above InputBar when PaSS is unreachable */
+.offline-banner {
+  text-align: center;
+  padding: var(--space-2) var(--space-4);
+  background: var(--danger-bg, rgba(239, 68, 68, 0.08));
+  border: 1px solid var(--danger, #ef4444);
+  border-radius: var(--r-lg);
+  font-size: var(--text-sm);
+  color: var(--danger, #ef4444);
+  margin: 0 var(--space-4) var(--space-2);
+}
+.blocked-banner {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: #dc2626;
+  color: #dc2626;
+  font-weight: 600;
+}
 
 /* ============================================================
    CHAT MAIN
@@ -608,6 +667,67 @@ a:hover { opacity: 0.8; }
 .channel-badge[data-ch="CHEQUE"]    .channel-badge__dot { background: #94a3b8; }
 .channel-badge[data-ch="CASH"]      { color: #2dd4bf; background: rgba(45,212,191,0.10);  border-color: rgba(45,212,191,0.30); }
 .channel-badge[data-ch="CASH"]      .channel-badge__dot { background: #2dd4bf; }
+
+/* Channel picker: inline buttons when LLM asks user to pick a channel */
+.channel-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.channel-picker__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: var(--r-full);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.08);
+  color: #818cf8;
+  cursor: pointer;
+  transition: all var(--tr);
+  white-space: nowrap;
+}
+.channel-picker__btn:hover {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.5);
+  transform: translateY(-1px);
+}
+.channel-picker__btn:active {
+  transform: translateY(0);
+}
+
+/* Fraud score badge: shown on agent messages when fraud analysis ran */
+.fraud-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 7px;
+  border-radius: var(--r-full);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid;
+  white-space: nowrap;
+  transition: opacity var(--tr);
+}
+.fraud-badge__icon { font-size: 0.75rem; }
+.fraud-badge__action {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.7;
+  margin-left: 2px;
+}
+/* Per-action colours */
+.fraud-badge[data-action="APPROVE"]  { color: #10b981; background: rgba(16,185,129,0.10); border-color: rgba(16,185,129,0.30); }
+.fraud-badge[data-action="MONITOR"]  { color: #fbbf24; background: rgba(251,191,36,0.10);  border-color: rgba(251,191,36,0.30); }
+.fraud-badge[data-action="ESCALATE"] { color: #f97316; background: rgba(249,115,22,0.10);  border-color: rgba(249,115,22,0.30); }
+.fraud-badge[data-action="BLOCK"]    { color: #ef4444; background: rgba(239,68,68,0.10);   border-color: rgba(239,68,68,0.30); }
 
 .message-timestamp {
   display: flex;

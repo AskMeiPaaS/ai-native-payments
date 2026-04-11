@@ -60,7 +60,7 @@ public class DeterministicToolExecutor {
             case "TRANSFER" -> {
                 toolName = "transferFunds";
                 args.put("beneficiary", intent.beneficiary());
-                if (!"auto".equalsIgnoreCase(intent.channel())) {
+                if (!"UNKNOWN".equalsIgnoreCase(intent.channel())) {
                     args.put("targetBank", intent.channel());
                 }
                 args.put("amount", intent.amount());
@@ -68,7 +68,7 @@ public class DeterministicToolExecutor {
             case "RECEIVE" -> {
                 toolName = "receiveFunds";
                 args.put("amount", intent.amount());
-                if (!"auto".equalsIgnoreCase(intent.channel())) {
+                if (!"UNKNOWN".equalsIgnoreCase(intent.channel())) {
                     args.put("channel", intent.channel());
                 }
             }

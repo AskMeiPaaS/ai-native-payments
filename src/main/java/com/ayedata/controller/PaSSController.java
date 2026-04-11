@@ -194,6 +194,7 @@ public class PaSSController {
                 // Capture step-level token metrics from orchestration stage events
                 AtomicInteger step1InputTokens  = new AtomicInteger(0);
                 AtomicInteger step1OutputTokens = new AtomicInteger(0);
+                AtomicBoolean didFormat         = new AtomicBoolean(false);
 
                 // Get the token stream from the two-fold streaming orchestrator,
                 // passing a stage callback that emits SSE "stage" events to the UI.
@@ -208,6 +209,10 @@ public class PaSSController {
                                     Object out = stageData.get("step1OutputTokens");
                                     if (in  instanceof Number n) step1InputTokens.set(n.intValue());
                                     if (out instanceof Number n) step1OutputTokens.set(n.intValue());
+                                }
+                                // Track whether a formatting step was emitted
+                                if ("formatting".equals(stageName)) {
+                                    didFormat.set(true);
                                 }
 
                                 Map<String, Object> payload = new LinkedHashMap<>(stageData);
@@ -260,11 +265,12 @@ public class PaSSController {
                                 int s1Out = step1OutputTokens.get();
 
                                 // Step 3 (format/stream) tokens — from LangChain4j TokenUsage
+                                // Only attribute to the formatting step when deterministic formatting was used.
                                 TokenUsage tu = response.tokenUsage();
                                 int s3In  = (tu != null && tu.inputTokenCount()  != null) ? tu.inputTokenCount()  : 0;
                                 int s3Out = (tu != null && tu.outputTokenCount() != null) ? tu.outputTokenCount() : 0;
 
-                                // Combined totals
+                                // Combined totals (always include LLM tokens regardless of path)
                                 int totalInput  = s1In + s3In;
                                 int totalOutput = s1Out + s3Out;
                                 int totalTokens = totalInput + totalOutput;
@@ -276,8 +282,11 @@ public class PaSSController {
                                 completeData.put("elapsedMs", elapsedMs);
                                 completeData.put("step1InputTokens", s1In);
                                 completeData.put("step1OutputTokens", s1Out);
-                                completeData.put("step3InputTokens", s3In);
-                                completeData.put("step3OutputTokens", s3Out);
+                                // Only include step3 (formatting) tokens when the formatting step actually ran
+                                if (didFormat.get()) {
+                                    completeData.put("step3InputTokens", s3In);
+                                    completeData.put("step3OutputTokens", s3Out);
+                                }
                                 completeData.put("inputTokens", totalInput);
                                 completeData.put("outputTokens", totalOutput);
                                 completeData.put("totalTokens", totalTokens);

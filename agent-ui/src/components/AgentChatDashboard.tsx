@@ -73,6 +73,8 @@ interface TokenStats {
   elapsedMs: number;
   step1InputTokens?: number;
   step1OutputTokens?: number;
+  step2ElapsedMs?: number;
+  fraudElapsedMs?: number;
   step3InputTokens?: number;
   step3OutputTokens?: number;
 }
@@ -90,6 +92,14 @@ interface AccountSummary {
   lastPaymentMethod?: string;
   lastTransactionType?: string;
   recentTransfers?: AccountTransferSummary[];
+}
+
+interface StageBannerRow {
+  key: string;
+  icon: string;
+  label: string;
+  detail: string;
+  status: 'active' | 'done' | 'error';
 }
 
 interface AgentChatDashboardProps {
@@ -129,13 +139,37 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
   );
   const [accountError, setAccountError] = useState<string | null>(null);
   const [isAccountLoading, setIsAccountLoading] = useState(!userProfile);
-  const [lastTokenStats, setLastTokenStats] = useState<TokenStats | null>(null);
-  const [lastBehavioralScore, setLastBehavioralScore] = useState<{
+  const [lastTokenStats, _setLastTokenStats] = useState<TokenStats | null>(null);
+  const [lastBehavioralScore, _setLastBehavioralScore] = useState<{
     riskScore: number;
     behavioralScore: number;
     action: string;
     signals: string[];
   } | null>(null);
+  const [stageBanner, setStageBanner] = useState<StageBannerRow[]>([]);
+
+  // Resolve effective userId for API calls (declared early for localStorage keys)
+  const effectiveUserId = userId || 'demo-user';
+
+  // Wrap setters to persist to localStorage keyed by session
+  const persistKey = (suffix: string) => `pass_${effectiveUserId}_${suffix}`;
+  const setLastTokenStats = useCallback((statsOrFn: TokenStats | null | ((prev: TokenStats | null) => TokenStats | null)) => {
+    _setLastTokenStats((prev) => {
+      const next = typeof statsOrFn === 'function' ? statsOrFn(prev) : statsOrFn;
+      try {
+        if (next) localStorage.setItem(persistKey('tokenStats'), JSON.stringify(next));
+        else localStorage.removeItem(persistKey('tokenStats'));
+      } catch { /* quota / SSR */ }
+      return next;
+    });
+  }, [effectiveUserId]);
+  const setLastBehavioralScore = useCallback((score: { riskScore: number; behavioralScore: number; action: string; signals: string[] } | null) => {
+    _setLastBehavioralScore(score);
+    try {
+      if (score) localStorage.setItem(persistKey('fraudScore'), JSON.stringify(score));
+      else localStorage.removeItem(persistKey('fraudScore'));
+    } catch { /* quota / SSR */ }
+  }, [effectiveUserId]);
 
   // Parse behavioral score from agent response
   const parseBehavioralScore = (responseText: string) => {
@@ -155,9 +189,6 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
     return null;
   };
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  // Resolve effective userId for API calls
-  const effectiveUserId = userId || 'demo-user';
 
   const buildActivityEntry = useCallback((
     stage: string,
@@ -264,6 +295,14 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
     // Load previous chat history for this user
     void loadChatHistory(userSessionId);
 
+    // Restore last token stats & fraud score from localStorage
+    try {
+      const savedTokens = localStorage.getItem(`pass_${effectiveUserId}_tokenStats`);
+      if (savedTokens) _setLastTokenStats(JSON.parse(savedTokens));
+      const savedFraud = localStorage.getItem(`pass_${effectiveUserId}_fraudScore`);
+      if (savedFraud) _setLastBehavioralScore(JSON.parse(savedFraud));
+    } catch { /* parse / SSR */ }
+
     // Check health immediately
     checkHealth();
     void refreshAccountSummary();
@@ -298,6 +337,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
 
       setMessages((prev) => [...prev, userMsg]);
       setIsLoading(true);
+      setStageBanner([]);
 
       // Add wait message (agent)
       const waitMsg: Message = {
@@ -436,6 +476,8 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   const toneLookup: Record<string, 'info' | 'success' | 'warn' | 'error'> = {
                     classifying: 'info',
                     classified: 'info',
+                    fraud_analyzing: 'warn',
+                    fraud_analyzed: jsonData.blocked ? 'error' : 'success',
                     executing: 'warn',
                     executed: jsonData.success === false ? 'error' : 'success',
                     formatting: 'info',
@@ -447,7 +489,11 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   appendActivity(progressPrefix + stageName, stageMsg, toneLookup[stageName] || 'info');
 
                   // Update wait message with current stage
-                  const stageIcon = stageName === 'executing' ? '⚡' : stageName === 'formatting' ? '✍️' : '🔍';
+                  const stageIcon = stageName === 'fraud_analyzing' ? '🛡️'
+                    : stageName === 'fraud_analyzed' ? '🛡️'
+                    : stageName === 'executing' ? '⚡'
+                    : stageName === 'formatting' ? '✍️'
+                    : '🔍';
                   setMessages((prev) =>
                     prev.map((msg) =>
                       msg.id === waitMsgId
@@ -455,6 +501,48 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                         : msg
                     )
                   );
+
+                  // Incrementally update token stats for the classified stage
+                  if (stageName === 'classified' && jsonData.step1InputTokens !== undefined) {
+                    setLastTokenStats((prev) => ({
+                      inputTokens: (jsonData.step1InputTokens ?? 0),
+                      outputTokens: (jsonData.step1OutputTokens ?? 0),
+                      totalTokens: (jsonData.step1InputTokens ?? 0) + (jsonData.step1OutputTokens ?? 0),
+                      elapsedMs: prev?.elapsedMs ?? 0,
+                      step1InputTokens: jsonData.step1InputTokens,
+                      step1OutputTokens: jsonData.step1OutputTokens,
+                      step2ElapsedMs: prev?.step2ElapsedMs,
+                      fraudElapsedMs: prev?.fraudElapsedMs,
+                      step3InputTokens: prev?.step3InputTokens,
+                      step3OutputTokens: prev?.step3OutputTokens,
+                    }));
+                  }
+
+                  // Incrementally update for fraud_analyzed stage
+                  if (stageName === 'fraud_analyzed' && jsonData.fraudElapsedMs !== undefined) {
+                    setLastTokenStats((prev) => ({
+                      ...prev ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
+                      fraudElapsedMs: jsonData.fraudElapsedMs,
+                    }));
+                  }
+
+                  // Incrementally update for executed stage
+                  if (stageName === 'executed' && jsonData.step2ElapsedMs !== undefined) {
+                    setLastTokenStats((prev) => ({
+                      ...prev ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0, elapsedMs: 0 },
+                      step2ElapsedMs: jsonData.step2ElapsedMs,
+                    }));
+                  }
+
+                  // Extract fraud analysis data from the fraud_analyzed stage for sidebar display
+                  if (stageName === 'fraud_analyzed' && jsonData.riskScore !== undefined) {
+                    setLastBehavioralScore({
+                      riskScore: jsonData.riskScore,
+                      behavioralScore: jsonData.behavioralScore ?? jsonData.riskScore,
+                      action: jsonData.action ?? 'UNKNOWN',
+                      signals: jsonData.signals ?? [],
+                    });
+                  }
 
                   // If channel was detected during classification or execution, remember it
                   // so the final chat bubble gets the channel badge even before streaming starts.
@@ -466,6 +554,59 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           : msg
                       )
                     );
+                  }
+
+                  // ── Stage banner rows ──
+                  const upsert = (key: string, icon: string, label: string, detail: string, st: StageBannerRow['status']) => {
+                    setStageBanner((prev) => {
+                      const idx = prev.findIndex((r) => r.key === key);
+                      const row: StageBannerRow = { key, icon, label, detail, status: st };
+                      if (idx >= 0) { const next = [...prev]; next[idx] = row; return next; }
+                      return [...prev, row];
+                    });
+                  };
+                  switch (stageName) {
+                    case 'classifying':
+                      upsert('classify', '🔍', 'Classification', stageMsg, 'active');
+                      break;
+                    case 'classified': {
+                      const parts: string[] = [];
+                      if (jsonData.action) parts.push(jsonData.action);
+                      if (jsonData.amount) parts.push(`₹${jsonData.amount}`);
+                      if (jsonData.beneficiary) parts.push(`→ ${jsonData.beneficiary}`);
+                      if (jsonData.confidence) parts.push(`(${Math.round(jsonData.confidence * 100)}%)`);
+                      upsert('classify', '🔍', 'Classification', parts.join(' ') || stageMsg, 'done');
+                      if (jsonData.channel && jsonData.channel !== 'auto' && jsonData.channel !== 'auto-select') {
+                        upsert('channel', '📡', 'Channel', `${jsonData.channel} via RAG+LLM`, 'done');
+                      }
+                      break;
+                    }
+                    case 'fraud_analyzing':
+                      upsert('fraud', '🛡️', 'Fraud Analysis', stageMsg, 'active');
+                      break;
+                    case 'fraud_analyzed':
+                      upsert('fraud', '🛡️', 'Fraud Analysis',
+                        jsonData.action
+                          ? `${jsonData.action} · Risk ${(jsonData.riskScore * 100).toFixed(0)}%`
+                          : stageMsg,
+                        jsonData.blocked ? 'error' : 'done');
+                      break;
+                    case 'executing':
+                      upsert('execute', '⚡', 'Tool Execution', stageMsg, 'active');
+                      break;
+                    case 'executed':
+                      upsert('execute', '⚡', 'Tool Execution', stageMsg,
+                        jsonData.success === false ? 'error' : 'done');
+                      if (jsonData.channel && jsonData.channel !== 'auto' && jsonData.channel !== 'auto-select') {
+                        upsert('channel', '📡', 'Channel', `${jsonData.channel} via RAG+LLM`, 'done');
+                      }
+                      break;
+                    case 'formatting':
+                      upsert('format', '✍️', 'Response', 'Generating response…', 'active');
+                      break;
+                    case 'fallback':
+                      upsert('fallback', '⚠️', 'Fallback', stageMsg, 'done');
+                      break;
                   }
                   continue;
                 }
@@ -537,16 +678,18 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                     'success'
                   );
                   if (jsonData.outputTokens !== undefined) {
-                    setLastTokenStats({
+                    setLastTokenStats((prev) => ({
                       inputTokens:  jsonData.inputTokens  ?? 0,
                       outputTokens: jsonData.outputTokens ?? 0,
                       totalTokens:  jsonData.totalTokens  ?? 0,
                       elapsedMs:    jsonData.elapsedMs,
-                      step1InputTokens:  jsonData.step1InputTokens  ?? 0,
-                      step1OutputTokens: jsonData.step1OutputTokens ?? 0,
+                      step1InputTokens:  jsonData.step1InputTokens  ?? prev?.step1InputTokens ?? 0,
+                      step1OutputTokens: jsonData.step1OutputTokens ?? prev?.step1OutputTokens ?? 0,
+                      step2ElapsedMs: prev?.step2ElapsedMs,
+                      fraudElapsedMs: prev?.fraudElapsedMs,
                       step3InputTokens:  jsonData.step3InputTokens  ?? 0,
                       step3OutputTokens: jsonData.step3OutputTokens ?? 0,
-                    });
+                    }));
                   }
                   // Parse and set behavioral score from response
                   const behavioralScore = parseBehavioralScore(fullResponse);
@@ -568,6 +711,8 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                         : msg
                     );
                   });
+                  // Mark any remaining active banner rows as done
+                  setStageBanner((prev) => prev.map((r) => r.status === 'active' ? { ...r, status: 'done' } : r));
                   // Refresh immediately; also schedule a follow-up in 2 s in case the
                   // MongoDB write isn't visible yet at the moment of the first read.
                   void refreshAccountSummary(true);
@@ -635,8 +780,11 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
       console.warn('Failed to clear chat history on server:', e);
     }
     setMessages([]);
+    setStageBanner([]);
+    setLastTokenStats(null);
+    setLastBehavioralScore(null);
     resetActivityLog('New chat', 'Chat history cleared. Start a new conversation.', 'info');
-  }, [sessionId, resetActivityLog]);
+  }, [sessionId, resetActivityLog, setLastTokenStats, setLastBehavioralScore]);
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], {
@@ -759,6 +907,30 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   </div>
                 ))
               )}
+
+              {/* Pipeline stage banner */}
+              {stageBanner.length > 0 && (
+                <div className="stage-banner">
+                  <div className="stage-banner__header">⚙ Pipeline Stages</div>
+                  <table className="stage-banner__table">
+                    <tbody>
+                      {stageBanner.map((row) => (
+                        <tr key={row.key} className={`stage-banner__row stage-banner__row--${row.status}`}>
+                          <td className="stage-banner__icon">{row.icon}</td>
+                          <td className="stage-banner__label">{row.label}</td>
+                          <td className="stage-banner__status">
+                            {row.status === 'active' && <span className="stage-spinner" />}
+                            {row.status === 'done' && '✅'}
+                            {row.status === 'error' && '❌'}
+                          </td>
+                          <td className="stage-banner__detail">{row.detail}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
               <div ref={messagesEndRef} />
             </div>
 

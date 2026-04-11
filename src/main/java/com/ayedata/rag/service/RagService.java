@@ -96,8 +96,8 @@ public class RagService {
      *
      * Returns an empty string if Atlas is unavailable or no documents match.
      */
-    private static final int MAX_CHUNK_CHARS = 700;
-    private static final int MAX_RAG_CONTEXT_CHARS = 1500;
+    private static final int MAX_CHUNK_CHARS = 500;
+    private static final int MAX_RAG_CONTEXT_CHARS = 1000;
 
     public String retrieveContext(String query, int topK) {
         try {

@@ -5,7 +5,9 @@ import com.ayedata.payment.PaymentContext;
 import com.ayedata.payment.PaymentResult;
 import com.ayedata.payment.PaymentSwitchRouter;
 import com.ayedata.service.AccountBalanceService;
-import com.ayedata.service.FraudContextService;
+import com.ayedata.fraud.FraudAction;
+import com.ayedata.fraud.FraudAgentOrchestrator;
+import com.ayedata.fraud.FraudAnalysisResult;
 import com.ayedata.service.MongoLedgerService;
 import com.ayedata.domain.FinancialData;
 import com.ayedata.domain.TransactionRecord;
@@ -32,6 +34,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 @Component
@@ -41,7 +44,7 @@ public class LedgerTools {
     /** MongoDB collection in {@code pass_memory} that maps sessionId → userId. */
     private static final String SESSION_REGISTRY = "session_registry";
 
-    private final FraudContextService fraudContextService;
+    private final FraudAgentOrchestrator fraudAgentOrchestrator;
     private final PaymentSwitchRouter paymentSwitchRouter;
     private final MongoLedgerService mongoLedgerService;
     private final AccountBalanceService accountBalanceService;
@@ -51,13 +54,26 @@ public class LedgerTools {
     private static final DateTimeFormatter TXN_DATE_FMT =
             DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm").withZone(ZoneId.of("Asia/Kolkata"));
 
-    public LedgerTools(FraudContextService fraudContextService,
+    /** Pre-computed fraud results cached by the orchestrator's Stage 2 to avoid duplicate analysis in tools. */
+    private final ConcurrentHashMap<String, FraudAnalysisResult> cachedFraudResults = new ConcurrentHashMap<>();
+
+    /** Cache a fraud result from the orchestrator's Stage 2 so tools can reuse it. */
+    public void cacheFraudResult(String sessionId, FraudAnalysisResult result) {
+        cachedFraudResults.put(sessionId, result);
+    }
+
+    /** Retrieve and remove a cached fraud result. Returns null if none was cached (tools will run their own analysis). */
+    private FraudAnalysisResult consumeCachedFraudResult(String sessionId) {
+        return cachedFraudResults.remove(sessionId);
+    }
+
+    public LedgerTools(FraudAgentOrchestrator fraudAgentOrchestrator,
                        PaymentSwitchRouter paymentSwitchRouter,
                        MongoLedgerService mongoLedgerService,
                        AccountBalanceService accountBalanceService,
                        @Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate,
                        @Qualifier("memoryMongoTemplate") MongoTemplate memoryMongoTemplate) {
-        this.fraudContextService = fraudContextService;
+        this.fraudAgentOrchestrator = fraudAgentOrchestrator;
         this.paymentSwitchRouter = paymentSwitchRouter;
         this.mongoLedgerService = mongoLedgerService;
         this.accountBalanceService = accountBalanceService;
@@ -118,17 +134,10 @@ public class LedgerTools {
     }
 
     @Tool("""
-            Transfers money securely to a beneficiary. The first parameter accepts a beneficiary name, \
-            account number, UPI ID, or merchant ID — use whatever the user provided. \
-            Use this for send/pay/transfer requests with a real amount. \
-            The channel parameter is optional — if not provided, the tool automatically selects the \
-            optimal channel for the amount (UPI Lite ≤₹500, UPI ≤₹1L, NEFT <₹2L, RTGS ≥₹2L). \
-            If the user has specified a channel, pass it as-is — the tool enforces all channel and \
-            amount rules and will return CHANNEL_MISMATCH with a corrected channel if needed. \
-            NEVER apply your own channel-amount rules. \
-            On CHANNEL_MISMATCH: automatically re-call this tool with the suggested channel — \
-            do NOT ask the user; just inform them of the correction you made. \
-            It rejects overdrafts and never allows a negative balance.\
+            Transfer money to a beneficiary (name, UPI ID, or account number). \
+            Channel is optional — auto-selects optimal channel for the amount. \
+            On CHANNEL_MISMATCH: re-call with suggested channel, don't ask user. \
+            Rejects overdrafts.\
             """)
     public String transferFunds(@ToolMemoryId String memoryId,
                                @P("Beneficiary: person name, UPI ID, account number, or merchant ID") String beneficiary,
@@ -152,12 +161,15 @@ public class LedgerTools {
         log.info("Transfer tool invoked: session={} user={} → beneficiary={} amount=₹{} via {}",
                 memoryId, userId, beneficiary, amount, targetBank);
 
-        // Perform fraud analysis
-        var fraudResult = fraudContextService.analyzeFraudContext(
-                memoryId, userId, amount, beneficiary, targetBank);
+        // Perform fraud analysis via LangChain4j Fraud Agent (or reuse cached result from Stage 2)
+        var fraudResult = consumeCachedFraudResult(memoryId);
+        if (fraudResult == null) {
+            fraudResult = fraudAgentOrchestrator.analyze(
+                    memoryId, userId, amount, beneficiary, targetBank);
+        }
 
         // Check if transaction should be blocked
-        if (fraudResult.action() == FraudContextService.FraudAction.BLOCK) {
+        if (fraudResult.action() == FraudAction.BLOCK) {
             return String.format(
                     "TRANSFER_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
                     fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
@@ -186,18 +198,10 @@ public class LedgerTools {
     }
 
     @Tool("""
-            Credits (adds) money into the user's account when they want to RECEIVE, ADD, TOP UP, DEPOSIT, or GET funds. \
-            The channel parameter is optional — if not provided, the tool automatically selects the \
-            optimal channel for the amount (UPI Lite ≤₹500, UPI ≤₹1L, NEFT <₹2L, RTGS ≥₹2L). \
-            If the user has specified a channel, pass it as-is — the tool enforces all channel and amount \
-            rules and will return CHANNEL_MISMATCH with a corrected channel name if needed. \
-            NEVER apply your own channel-amount rules. \
-            On CHANNEL_MISMATCH: automatically re-call this tool with the suggested channel — \
-            do NOT ask the user; just inform them of the correction you made. \
-            Call this when the user says things like: 'add ₹5000 to my account', \
-            'receive ₹10000', 'top up my wallet', 'deposit funds', 'credit my account', \
-            'I got paid ₹X', or 'add balance'. \
-            Never call this for outbound transfers — use transferFunds for those.\
+            Credit (add) money into the user's account for receive/deposit/top-up requests. \
+            Channel is optional — auto-selects optimal channel for the amount. \
+            On CHANNEL_MISMATCH: re-call with suggested channel, don't ask user. \
+            Not for outbound transfers — use transferFunds instead.\
             """)
     public String receiveFunds(@ToolMemoryId String memoryId,
                               @P("Amount to credit in INR, must be positive") double amount,
@@ -226,12 +230,15 @@ public class LedgerTools {
 
         log.info("Receive funds tool invoked: session={} user={} ₹{} via {}", memoryId, userId, amount, channel);
 
-        // Perform fraud analysis for incoming funds
-        var fraudResult = fraudContextService.analyzeFraudContext(
-                memoryId, userId, amount, "External Payer", channel);
+        // Perform fraud analysis for incoming funds (or reuse cached result from Stage 2)
+        var fraudResult = consumeCachedFraudResult(memoryId);
+        if (fraudResult == null) {
+            fraudResult = fraudAgentOrchestrator.analyze(
+                    memoryId, userId, amount, "External Payer", channel);
+        }
 
         // Check if transaction should be blocked
-        if (fraudResult.action() == FraudContextService.FraudAction.BLOCK) {
+        if (fraudResult.action() == FraudAction.BLOCK) {
             return String.format(
                     "RECEIVE_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
                     fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
@@ -314,12 +321,15 @@ public class LedgerTools {
         String userId = resolveUserId(memoryId);
         log.info("Mandate switch tool invoked for session {} user {}: {}", memoryId, userId, bankName);
 
-        // Perform fraud analysis for mandate switch
-        var fraudResult = fraudContextService.analyzeFraudContext(
-                memoryId, userId, 0.0, bankName, "MANDATE");
+        // Perform fraud analysis for mandate switch (or reuse cached result from Stage 2)
+        var fraudResult = consumeCachedFraudResult(memoryId);
+        if (fraudResult == null) {
+            fraudResult = fraudAgentOrchestrator.analyze(
+                    memoryId, userId, 0.0, bankName, "MANDATE");
+        }
 
         // Check if transaction should be blocked
-        if (fraudResult.action() == FraudContextService.FraudAction.BLOCK) {
+        if (fraudResult.action() == FraudAction.BLOCK) {
             return String.format(
                     "MANDATE_BLOCKED: Fraud detection blocked this mandate switch. Risk score: %.2f, Signals: %s",
                     fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));

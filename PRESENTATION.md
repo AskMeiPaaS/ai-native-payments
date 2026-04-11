@@ -93,67 +93,66 @@ An **AI-native** application inverts this: the LLM is the primary decision engin
 
 The platform features an advanced, AI-native fraud detection system that goes beyond traditional rule-based approaches:
 
-### RAG-Supplemented Fraud Intelligence
+### Dedicated Fraud Agent (LangChain4j)
 
-Unlike static fraud rules, this system retrieves contextual knowledge from a comprehensive RAG corpus:
+Unlike static fraud rules, this system uses a **dedicated LangChain4j agent** (`com.ayedata.fraud` package) with its own `@Tool` methods, system prompt, and trust boundary. It runs as **Stage 2** of the pipeline — after classification, before tool execution.
 
 | Traditional Approach | AI-Native Approach |
 |---------------------|-------------------|
-| Hard-coded thresholds | Dynamic risk scoring with RAG context |
-| Rule-based signal detection | LLM-powered pattern analysis |
-| Static penalty multipliers | Adaptive risk adjustments based on retrieved knowledge |
+| Hard-coded thresholds | Dynamic risk scoring with RAG context via Fraud Agent; all thresholds externalized to `.env` via `FraudConfig` |
+| Rule-based signal detection | LLM-powered pattern analysis + deterministic signal analyzer |
+| Static penalty multipliers | Configurable risk multipliers per signal type (`FRAUD_MULT_*` env vars) |
 | Manual rule updates | Knowledge base updates without code changes |
+| No behavioral profiling | Behavioral scoring from transaction history (amount consistency + frequency regularity) |
+| Single fraud check point | Dedicated pipeline stage with SSE visibility (`fraud_analyzing` → `fraud_analyzed`) |
 
 ### Fraud Analysis Pipeline
 
 ```
-User Intent → RAG Retrieval → Signal Detection → Composite Scoring → Action Determination
+Stage 2: FraudAgentOrchestrator.analyze()
+  → FraudConfig: loads thresholds, multipliers, behavioral params from .env
+  → FraudSignalAnalyzer: RAG retrieval + behavioral scoring + signal detection + composite scoring
+  → FraudAgent (LangChain4j): @Tool calls → LLM risk assessment
+  → FraudAnalysisResult { riskScore, behavioralScore, signals, action, ragContext }
+  → BLOCK → short-circuit pipeline
 ```
 
-#### 1. Contextual Knowledge Retrieval
-- Retrieves fraud patterns, regulatory thresholds, and mitigation strategies from embedded documents
-- Uses Voyage AI reranking for relevance scoring
-- Provides domain-specific context for risk assessment
+### Externalized Fraud Configuration
 
-#### 2. Multi-Signal Analysis
-| Signal Type | Detection Logic | Risk Impact |
-|-------------|----------------|-------------|
-| **High-Value Transactions** | Amount > ₹1,00,000 | High risk multiplier (0.8x) |
-| **Geographic Anomalies** | Location mismatch with user profile | Critical risk (0.7x) |
-| **Device Patterns** | New/unrecognized device fingerprints | Medium risk (0.9x) |
-| **Timing Anomalies** | Transactions outside normal hours | Moderate risk (0.85x) |
+All fraud parameters are externalized via `FraudConfig` — tunable via `.env` without code changes:
 
-#### 3. Composite Risk Scoring
-```
-Final Risk Score = Behavioral Similarity × Signal Penalties × RAG Context Weight
-```
+| Parameter | Env Variable | Default |
+|-----------|-------------|--------|
+| High-value threshold | `FRAUD_HIGH_VALUE_THRESHOLD` | ₹5,000 |
+| Signal multipliers | `FRAUD_MULT_HIGH_VALUE` / `GEO_ANOMALY` / `NEW_DEVICE` / `UNUSUAL_TIMING` | 0.8 / 0.7 / 0.6 / 0.9 |
+| Approve threshold | `FRAUD_THRESHOLD_APPROVE` | 0.95 |
+| Monitor threshold | `FRAUD_THRESHOLD_MONITOR` | 0.80 |
+| Baseline score | `FRAUD_BASELINE_SCORE` | 0.95 |
+| Hardblock signals | `FRAUD_HARDBLOCK_SIGNALS` | `GEO_ANOMALY_DETECTED,NEW_DEVICE_PATTERN` |
+| Behavioral lookback | `FRAUD_BEHAVIORAL_LOOKBACK_DAYS` | 90 days |
+| Min transactions | `FRAUD_BEHAVIORAL_MIN_TRANSACTIONS` | 3 |
 
-#### 4. Intelligent Action Thresholds
-| Risk Score | Action | Outcome |
-|------------|--------|---------|
-| ≥ 0.95 | **APPROVE** | Automatic processing with audit logging |
-| 0.80 - 0.95 | **MONITOR** | Proceed with enhanced monitoring |
-| < 0.80 | **ESCALATE** | Route to Human-in-the-Loop (HITL) for review |
-| Critical signals | **BLOCK** | Immediate rejection with fraud alert |
+### Behavioral Scoring
+
+`getBehavioralSimilarityScore()` computes a weighted composite from the user’s transaction history:
+
+- **Amount consistency (60%)** — coefficient of variation of historical amounts; low variance = high trust
+- **Frequency regularity (40%)** — transactions/week; regular activity = high trust
+- Returns `0.0` when insufficient history (< min transactions), triggering the configurable baseline
+- Lookback window and minimum transaction count are configurable via `.env`
 
 ### Integration with Transaction Flow
 
-Fraud analysis is seamlessly integrated into the payment orchestration:
+Fraud analysis is the explicit **Stage 2** in the orchestration pipeline:
 
-1. **Pre-Transaction Assessment**: Fraud context analyzed before any balance changes
-2. **Real-time Decision Making**: Actions enforced at tool execution time
-3. **Full Audit Trail**: All signals, scores, and RAG context stored in transaction records
-4. **Explainable Outcomes**: Regulators and users can see *why* decisions were made
+1. **Stage 1 — Classify**: LLM extracts intent (stateless)
+2. **Stage 2 — Fraud Detection**: `FraudAgentOrchestrator` runs dedicated Fraud Agent → SSE events `fraud_analyzing` / `fraud_analyzed`
+3. **Stage 3 — Execute**: If not blocked, `@Tool` method executes ACID transaction
+4. **Stage 4 — Format**: LLM formats result as natural language
 
-### Regulatory Compliance
-
-The system ensures compliance with Indian financial regulations:
-- **AML Screening**: Automatic triggers for transactions above ₹10,00,000
-- **STR Filing**: Suspicious pattern detection with escalation protocols
-- **PAN Requirements**: Validation for transactions above ₹50,000
-- **Cash Ban Enforcement**: Blocks for amounts above ₹2,00,000
-
-This AI-native fraud detection provides intelligent, adaptive protection while maintaining full transparency and regulatory compliance.
+- BLOCK short-circuits → Stages 3–4 skipped
+- Fraud results cached per session via `ConcurrentHashMap` in `LedgerTools` to avoid double analysis
+- `totalSteps` computed dynamically (4 for transactional, 3 or 2 for non-transactional)
 
 ---
 
@@ -209,7 +208,7 @@ Key abstractions used in this platform:
 
 ## 🎭 Different Roles of the LLM
 
-The LLM in this platform is not a single monolithic chatbot. It plays **four distinct roles**, each with a different system prompt, memory scope, and trust boundary:
+The LLM in this platform is not a single monolithic chatbot. It plays **five distinct roles**, each with a different system prompt, memory scope, and trust boundary:
 
 ### Role 1: Classifier (Stage 1)
 
@@ -231,7 +230,28 @@ User: "pay ₹5000 to Ramesh via UPI"
 
 The classifier is a **direct `ChatRequest`** (not an AiServices proxy) so we can capture exact input/output token counts for observability.
 
-### Role 2: Tool Orchestrator (Stage 2)
+### Role 2: Fraud Agent (Stage 2 — transactional only)
+
+| Property | Value |
+|----------|-------|
+| **Purpose** | Analyze fraud signals and determine risk action before tool execution |
+| **Input** | User intent + amount + channel + behavioral profile (from transaction history) |
+| **Output** | `FraudAnalysisResult`: risk score, behavioral score, signals, action (APPROVE/MONITOR/ESCALATE/BLOCK) |
+| **Memory** | None — stateless per invocation |
+| **Trust level** | Medium — dedicated LangChain4j `AiServices` proxy with own `@Tool` methods (`FraudTools`) |
+| **Config** | All thresholds and multipliers externalized via `FraudConfig` → `.env` |
+
+```
+FraudAgentOrchestrator.analyze(userId, userIntent, amount, channel)
+  → FraudAgent (LangChain4j) calls FraudTools @Tool methods
+  → FraudSignalAnalyzer: RAG retrieval + behavioral scoring + signal detection + risk scoring
+  → Returns FraudAnalysisResult { riskScore: 0.72, action: ESCALATE, signals: [...] }
+  → BLOCK → short-circuit pipeline (skip Stages 3–4)
+```
+
+The Fraud Agent has its own `@SystemMessage` encoding the action thresholds (≥0.95 APPROVE, 0.80–0.95 MONITOR, <0.80 ESCALATE, hardblock signals BLOCK — all configurable via `FraudConfig`). A deterministic fallback runs if the LLM fails.
+
+### Role 3: Tool Orchestrator (Stage 3)
 
 | Property | Value |
 |----------|-------|
@@ -251,7 +271,7 @@ LLM thinks: "User wants to transfer ₹5000 to Ramesh. I should call transferFun
   → LLM formats: "Done! ₹5,000 has been transferred to Ramesh via UPI."
 ```
 
-### Role 3: Response Formatter
+### Role 4: Response Formatter
 
 | Property | Value |
 |----------|-------|
@@ -263,7 +283,7 @@ LLM thinks: "User wants to transfer ₹5000 to Ramesh. I should call transferFun
 
 The formatter role is **merged with the Tool Orchestrator** in a single LLM interaction. After the tool returns its result, the LLM uses the same turn to compose the response — no separate call needed.
 
-### Role 4: Conversational Agent (General Queries)
+### Role 5: Conversational Agent (General Queries)
 
 | Property | Value |
 |----------|-------|
@@ -282,20 +302,20 @@ User: "What are the NEFT settlement timings?"
 ### Role Boundaries
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    LLM Trust Boundaries                     │
-│                                                             │
-│  ┌──────────┐  ┌──────────────┐  ┌──────────┐  ┌────────┐  │
-│  │Classifier│  │Tool          │  │Response  │  │Conver- │  │
-│  │          │  │Orchestrator  │  │Formatter │  │sational│  │
-│  │ Stateless│  │ +Tools       │  │ (merged) │  │ +RAG   │  │
-│  │ Low trust│  │ Med trust    │  │ Low trust│  │Med trust│  │
-│  └──────────┘  └──────────────┘  └──────────┘  └────────┘  │
-│       │               │                            │        │
-│       ▼               ▼                            ▼        │
-│  Parse & validate  @Tool methods             RAG grounding  │
-│  (retry on fail)   enforce rules             (no halluc.)   │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         LLM Trust Boundaries                            │
+│                                                                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌──────────┐  ┌────────┐│
+│  │Classifier│  │Fraud     │  │Tool          │  │Response  │  │Conver- ││
+│  │          │  │Agent     │  │Orchestrator  │  │Formatter │  │sational││
+│  │ Stateless│  │ +Tools   │  │ +Tools       │  │ (merged) │  │ +RAG   ││
+│  │ Low trust│  │ Med trust│  │ Med trust    │  │ Low trust│  │Med trust││
+│  └──────────┘  └──────────┘  └──────────────┘  └──────────┘  └────────┘│
+│       │              │              │                            │       │
+│       ▼              ▼              ▼                            ▼       │
+│  Parse & validate  Risk scoring  @Tool methods             RAG grounding│
+│  (retry on fail)   BLOCK/APPROVE enforce rules             (no halluc.) │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -304,28 +324,33 @@ User: "What are the NEFT settlement timings?"
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        BROWSER (Next.js 14)                         │
+│                     BROWSER (Next.js 16.2.1)                        │
 │   Chat UI · Balance Dashboard · HITL Operator Panel · Token Metrics │
 └─────────────────────────┬───────────────────────────────────────────┘
                           │ SSE / REST
 ┌─────────────────────────▼───────────────────────────────────────────┐
-│                   API GATEWAY (Java 21 + Spring Boot)               │
+│              API GATEWAY (Java 21 + Spring Boot 4.1.0-M4)           │
 │                                                                     │
-│  ┌─────────────┐   ┌──────────────────────────────────────────┐     │
-│  │  Stage 1     │   │  Stage 2 — LLM-Led Tool Orchestration    │     │
-│  │  CLASSIFY    │──▶│  LLM decides tools → LangChain4j execs   │     │
-│  │  (LLM Call)  │   │  → LLM formats response                 │     │
-│  └──────┬───────┘   └──────┬───────────────────────────────────┘     │
-│         │                  │                                         │
-│  ┌──────▼───────┐   ┌──────▼────────────────────────────────┐       │
-│  │ Intent Only: │   │ @Tool Methods (via AiServices proxy): │       │
-│  │ ACTION       │   │ • transferFunds → ACID commit         │       │
-│  │ BENEFICIARY  │   │ • receiveFunds  → ACID commit         │       │
-│  │ AMOUNT       │   │ • switchMandate → ACID commit         │       │
-│  │ CHANNEL      │   │ • checkBalance  → read                │       │
-│  └──────────────┘   │ • recentTransactions → filtered read  │       │
-│                     │ • searchTransactions → search read    │       │
-│                     └───────────────────────────────────────┘       │
+│  ┌─────────────┐   ┌───────────────┐   ┌─────────────────────┐     │
+│  │  Stage 1     │   │  Stage 2       │   │  Stage 3             │     │
+│  │  CLASSIFY    │──▶│  FRAUD DETECT  │──▶│  EXECUTE             │     │
+│  │  (LLM Call)  │   │  (Fraud Agent) │   │  (Deterministic Java)│     │
+│  └──────┬───────┘   └──────┬────────┘   └──────┬──────────────┘     │
+│         │                  │                    │                    │
+│  ┌──────▼───────┐   ┌──────▼────────┐   ┌──────▼──────────────┐    │
+│  │ Intent Only: │   │ Fraud Agent:  │   │ @Tool Methods:      │    │
+│  │ ACTION       │   │ • RAG signals │   │ • transferFunds     │    │
+│  │ BENEFICIARY  │   │ • Risk score  │   │ • receiveFunds      │    │
+│  │ AMOUNT       │   │ • Action:     │   │ • switchMandate     │    │
+│  │ CHANNEL      │   │   APPROVE /   │   │ • checkBalance      │    │
+│  └──────────────┘   │   MONITOR /   │   │ • recentTransactions│    │
+│                     │   ESCALATE /  │   │ • searchTransactions│    │
+│                     │   BLOCK       │   └─────────────────────┘    │
+│                     └───────────────┘          │                    │
+│                                         ┌──────▼──────────────┐    │
+│                                         │  Stage 4: FORMAT    │    │
+│                                         │  (LLM streaming)    │    │
+│                                         └─────────────────────┘    │
 └───────┬──────────────────┬──────────────────────┬───────────────────┘
         │                  │                      │
    ┌────▼─────┐    ┌──────▼───────┐    ┌─────────▼──────────┐
@@ -335,14 +360,16 @@ User: "What are the NEFT settlement timings?"
    └──────────┘    └──────────────┘    └────────────────────┘
 ```
 
-### Two-Stage Pipeline — LLM-Led Tool Orchestration
+### Multi-Stage Pipeline — Fraud-Aware Tool Orchestration
 
 | Stage | What Happens | LLM Involved? |
 |-------|-------------|----------------|
 | **Stage 1: Classify** | LLM reads user intent → outputs 4 fields: ACTION, BENEFICIARY, AMOUNT, CHANNEL | ✅ Single LLM call |
-| **Stage 2: Orchestrate** | LLM decides which `@Tool` to call → LangChain4j executes → LLM formats the response | ✅ LLM + Tool execution |
+| **Stage 2: Fraud Detection** | `FraudAgentOrchestrator` runs dedicated LangChain4j Fraud Agent with `@Tool` methods → risk score → APPROVE/MONITOR/ESCALATE/BLOCK | ✅ Separate LLM agent (transactional only) |
+| **Stage 3: Execute** | `DeterministicToolExecutor` dispatches to `@Tool` method → `MongoLedgerService` ACID commit | ❌ Pure Java |
+| **Stage 4: Format** | `StreamingSupervisor` formats tool result as natural language, streamed token-by-token | ✅ LLM streaming |
 
-> **Key insight:** The LLM has full tool access via LangChain4j AiServices, but `@Tool` methods enforce all business rules — amount validation, channel selection, ACID commits. The LLM orchestrates; Java enforces.
+> **Key insight:** BLOCK results from Stage 2 short-circuit the pipeline — Stages 3 and 4 are skipped. Non-transactional flows (queries, general questions) skip Stage 2 entirely. `totalSteps` is computed dynamically after classification.
 
 ---
 
@@ -593,8 +620,9 @@ The UI displays per-request token metrics in the sidebar:
 | Metric | Source |
 |--------|--------|
 | Step 1 Input/Output Tokens | Direct `ChatRequest` to Ollama (classifier) |
-| Step 3 Input/Output Tokens | Supervisor/Streaming response (formatter) |
-| Total Tokens | Sum of both steps |
+| Step 2 Fraud Analysis | `FraudAgentOrchestrator` — risk score, signals, action (transactional only) |
+| Step 4 Input/Output Tokens | Supervisor/Streaming response (formatter) |
+| Total Tokens | Sum of all LLM steps |
 | Tokens/second | `outputTokens / elapsedMs × 1000` |
 
 ---
@@ -609,7 +637,7 @@ The UI displays per-request token metrics in the sidebar:
 | **Data Sovereignty** | Local LLM — no prompts leave the infrastructure |
 | **Tool Safety** | `@Tool` methods enforce business rules; LLM cannot bypass validation |
 | **Query Security** | `@Tool` methods always scope queries to the authenticated `userId` — no cross-user data access |
-| **Fraud Detection** | Behavioral vector similarity scoring via `FraudContextService` |
+| **Fraud Detection** | Dedicated `FraudAgentOrchestrator` (LangChain4j agent with own @Tool methods) — Stage 2 of pipeline |
 | **HITL Escalation** | Any decision can be appealed; operators approve/deny/override |
 | **Audit Trail** | Every tool call, channel decision, and escalation logged in `pass_audit` |
 | **Input Validation** | `userId`, `sessionId`, `amount`, `beneficiary` validated at system boundaries |
@@ -677,7 +705,7 @@ curl -s -X POST http://localhost:8080/api/v1/agent/orchestrate \
 
 | Layer | Technology | Why |
 |-------|-----------|-----|
-| **Frontend** | Next.js 14 + React + TypeScript | Streaming SSE chat, dashboard, HITL panel |
+| **Frontend** | Next.js 16.2.1 + React + TypeScript | Streaming SSE chat, dashboard, HITL panel |
 | **Backend** | Java 21 + Spring Boot 4.1 | Virtual threads, ACID transactions |
 | **Orchestration** | LangChain4j 1.12.2 | @Tool binding, AiServices, streaming, memory |
 | **Database** | MongoDB Atlas Local | Vector search, ACID, Queryable Encryption, TTL |
@@ -709,8 +737,8 @@ open http://localhost:3000   # Chat UI
 ## 🎯 Key Takeaways
 
 1. **AI-native, not AI-augmented** — the LLM is the decision engine, not a bolt-on chatbot; deterministic Java enforces safety
-2. **LLM-led tool orchestration** — the LLM decides which `@Tool` to call; LangChain4j executes; `@Tool` methods enforce business rules
-3. **Four LLM roles** — Classifier (intent), Orchestrator (tool dispatch), Formatter (response), Conversational Agent (RAG Q&A)
+2. **Multi-stage fraud-aware pipeline** — Classify → Fraud Detection → Execute → Format; BLOCK short-circuits the pipeline; `@Tool` methods enforce business rules
+3. **Five LLM roles** — Classifier (intent), Fraud Agent (risk scoring), Orchestrator (tool dispatch), Formatter (response), Conversational Agent (RAG Q&A)
 4. **MongoDB is the unified brain** — vector search, ACID ledger, encrypted PII, session memory, audit trail — one technology, four isolated databases
 5. **Voyage AI provides semantic quality** — 1024-dim embeddings + reranking without competing for local compute
 6. **Ollama keeps data sovereign** — no payment data or PII ever leaves the infrastructure; zero marginal cost per token

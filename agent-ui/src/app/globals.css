@@ -618,6 +618,77 @@ a:hover { opacity: 0.8; }
   padding: 0 var(--space-1);
 }
 
+/* Stage banner — pipeline progress table shown during orchestration */
+.stage-banner {
+  margin: var(--space-3) var(--space-6);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  font-size: 0.82rem;
+  max-width: 540px;
+}
+.stage-banner__header {
+  padding: var(--space-2) var(--space-3);
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.stage-banner__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.stage-banner__row {
+  border-bottom: 1px solid var(--border);
+  transition: background var(--fast) var(--ease), opacity var(--fast) var(--ease);
+}
+.stage-banner__row:last-child { border-bottom: none; }
+.stage-banner__row--active { background: rgba(79, 195, 247, 0.06); }
+.stage-banner__row--done   { opacity: 0.85; }
+.stage-banner__row--error  { background: rgba(255, 80, 80, 0.08); }
+.stage-banner__icon,
+.stage-banner__label,
+.stage-banner__status,
+.stage-banner__detail {
+  padding: var(--space-2) var(--space-2);
+  vertical-align: middle;
+}
+.stage-banner__icon {
+  width: 1.6rem;
+  text-align: center;
+  font-size: 1rem;
+}
+.stage-banner__label {
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text);
+}
+.stage-banner__status {
+  width: 1.4rem;
+  text-align: center;
+}
+.stage-banner__detail {
+  color: var(--text-2);
+  font-size: 0.76rem;
+  word-break: break-word;
+}
+@keyframes stage-spin {
+  to { transform: rotate(360deg); }
+}
+.stage-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: stage-spin 0.8s linear infinite;
+}
+
 /* Empty state */
 .empty-state {
   flex: 1;

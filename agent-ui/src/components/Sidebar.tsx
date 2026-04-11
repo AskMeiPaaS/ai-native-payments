@@ -24,6 +24,8 @@ interface SidebarProps {
     elapsedMs: number;
     step1InputTokens?: number;
     step1OutputTokens?: number;
+    step2ElapsedMs?: number;
+    fraudElapsedMs?: number;
     step3InputTokens?: number;
     step3OutputTokens?: number;
   } | null;
@@ -178,22 +180,42 @@ export default function Sidebar({
         <div className="sidebar-label" style={{ marginTop: 'var(--space-3)' }}>Last Request Tokens</div>
         {lastTokenStats ? (
           <div className="token-stats-grid">
-            <div className="token-stat">
-              <span className="token-stat__label">Step 1 In</span>
-              <span className="token-stat__value">{lastTokenStats.step1InputTokens ?? 0}</span>
-            </div>
-            <div className="token-stat">
-              <span className="token-stat__label">Step 1 Out</span>
-              <span className="token-stat__value">{lastTokenStats.step1OutputTokens ?? 0}</span>
-            </div>
-            <div className="token-stat">
-              <span className="token-stat__label">Step 3 In</span>
-              <span className="token-stat__value">{lastTokenStats.step3InputTokens ?? 0}</span>
-            </div>
-            <div className="token-stat">
-              <span className="token-stat__label">Step 3 Out</span>
-              <span className="token-stat__value">{lastTokenStats.step3OutputTokens ?? 0}</span>
-            </div>
+            {(lastTokenStats.step1InputTokens !== undefined || lastTokenStats.step1OutputTokens !== undefined) && (
+              <>
+                <div className="token-stat">
+                  <span className="token-stat__label">Classify In</span>
+                  <span className="token-stat__value">{lastTokenStats.step1InputTokens ?? 0}</span>
+                </div>
+                <div className="token-stat">
+                  <span className="token-stat__label">Classify Out</span>
+                  <span className="token-stat__value">{lastTokenStats.step1OutputTokens ?? 0}</span>
+                </div>
+              </>
+            )}
+            {lastTokenStats.fraudElapsedMs !== undefined && (
+              <div className="token-stat" style={{ gridColumn: 'span 2' }}>
+                <span className="token-stat__label">Fraud Analysis</span>
+                <span className="token-stat__value">{(lastTokenStats.fraudElapsedMs / 1000).toFixed(1)}s</span>
+              </div>
+            )}
+            {lastTokenStats.step2ElapsedMs !== undefined && (
+              <div className="token-stat" style={{ gridColumn: 'span 2' }}>
+                <span className="token-stat__label">Tool Exec</span>
+                <span className="token-stat__value">{(lastTokenStats.step2ElapsedMs / 1000).toFixed(1)}s</span>
+              </div>
+            )}
+            {(lastTokenStats.step3InputTokens !== undefined && lastTokenStats.step3InputTokens > 0) && (
+              <>
+                <div className="token-stat">
+                  <span className="token-stat__label">Format In</span>
+                  <span className="token-stat__value">{lastTokenStats.step3InputTokens}</span>
+                </div>
+                <div className="token-stat">
+                  <span className="token-stat__label">Format Out</span>
+                  <span className="token-stat__value">{lastTokenStats.step3OutputTokens ?? 0}</span>
+                </div>
+              </>
+            )}
             <div className="token-stat">
               <span className="token-stat__label">Total</span>
               <span className="token-stat__value">{lastTokenStats.totalTokens || lastTokenStats.inputTokens + lastTokenStats.outputTokens}</span>

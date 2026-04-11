@@ -7,7 +7,7 @@ A comprehensive guide to the AI-native financial orchestration platform built fo
 ## 📑 Table of Contents
 
 1. **Modular Package Layout** - Responsibility-based module map
-2. **Core AI-Native Components** - Multi-agent orchestration, LangChain4j, tools, Stage 2 tool execution verification
+2. **Core AI-Native Components** - Multi-agent orchestration, LangChain4j, tools, multi-stage pipeline with fraud detection
 3. **Container & Microservices** - Docker topology, network config, service configuration
 4. **Data Flows, Streaming & Audit** - transaction processing, SSE lifecycle, session correlation
 5. **Business Rules** - balance rules, channel routing, risk profiles, regulatory constraints
@@ -37,6 +37,7 @@ The backend follows a responsibility-first package structure to keep the applica
 | `com.ayedata.controller` | Shared sync/streaming APIs that are not feature-specific |
 | `com.ayedata.domain` | Payment and user models |
 | `com.ayedata.exception` | Global exception handlers |
+| `com.ayedata.fraud` | Dedicated fraud detection agent — LangChain4j AiServices proxy, @Tool methods, signal analysis, risk scoring, externalized config (`FraudConfig`), behavioral profiling |
 | `com.ayedata.hitl` | User appeals, operator workflows, escalation models, HITL database init |
 | `com.ayedata.init` | Cross-cutting bootstrap logic and infrastructure initialization |
 | `com.ayedata.payment` | Payment channel routing and switch implementations |
@@ -158,9 +159,37 @@ LangChain4j manages the platform's "brain":
 - **Contextual Retrieval:** Context Agent uses MongoDB Vector Search for behavioral validation
 - **Short-Term Memory:** Time-Series collection stores real-time interaction data
 
-#### E. Stage 2 — Tool Execution Verification
+#### E. Multi-Stage Orchestration Pipeline
 
-The three-stage orchestration pipeline (`Stage 1: Classify → Stage 2: Execute → Stage 3: Format`) keeps all tool invocations in Stage 2. The classifier (Stage 1) only outputs intent metadata — it never generates code, queries, or tool calls. Stage 2 is purely deterministic Java execution with no LLM involvement.
+The pipeline dynamically adjusts its stage count based on intent type:
+
+- **Transactional flows** (transfer, receive, mandate): 4 stages — `Classify → Fraud Detection → Execute → Format`
+- **Query/informational flows**: 3 or 2 stages — `Classify → Execute → Format` (no fraud detection)
+
+`totalSteps` is computed dynamically after classification. SSE stage events keep the frontend in sync.
+
+**Stage 1 — Classify** (LLM call)
+- LLM extracts 4 fields: `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL`
+- SSE events: `classifying` → `classified`
+
+**Stage 2 — Fraud Detection** (LangChain4j Fraud Agent — transactional only)
+- `FraudAgentOrchestrator.analyze()` runs a dedicated LangChain4j `AiServices` proxy with its own `@Tool` methods
+- `FraudSignalAnalyzer` performs RAG retrieval + behavioral scoring + signal detection + composite risk scoring
+- All parameters externalized via `FraudConfig` (`@Configuration`) — thresholds, multipliers, hardblock signals, and behavioral lookback window are tunable via `.env` without code changes
+- **Behavioral scoring**: queries last N days (default 90) of user’s completed transactions, computes amount consistency (60%) + frequency regularity (40%) as a 0.0–1.0 composite score
+- Action thresholds: ≥0.95 APPROVE, 0.80–0.95 MONITOR, <0.80 ESCALATE, hardblock signals BLOCK (all configurable)
+- BLOCK short-circuits the pipeline (Stages 3–4 skipped)
+- Fraud result cached per session to avoid double analysis in downstream tools
+- SSE events: `fraud_analyzing` → `fraud_analyzed`
+
+**Stage 3 — Execute** (deterministic Java)
+- `DeterministicToolExecutor` dispatches to the correct `@Tool` method
+- ACID commit via `MongoLedgerService`
+- SSE events: `executing` → `executed`
+
+**Stage 4 — Format** (LLM call)
+- `StreamingSupervisor` formats tool result as natural language
+- Token-by-token SSE streaming to browser
 
 **Tool Registration (Boot-up)**
 
@@ -181,19 +210,25 @@ Registered executors: `transferFunds`, `receiveFunds`, `switchMandate`, `checkBa
 Routed when `intent.isTransactional() && intent.amount() > 0`:
 
 ```
-orchestrateSwitch / orchestrateSwitchStreaming
-  └─ executeToolDirectly(sessionId, intent, userIntent)
+orchestrateSwitchStreaming
+  └─ Stage 1: classifyIntent(userIntent)
+       └─ LLM → ACTION, BENEFICIARY, AMOUNT, CHANNEL
+  └─ Stage 2: fraudAgentOrchestrator.analyze(userId, userIntent, ...)
+       └─ FraudAgent (LangChain4j) → FraudAnalysisResult
+       └─ BLOCK → short-circuit with rejection message
+  └─ Stage 3: executeToolDirectly(sessionId, intent, userIntent)
        ├─ TRANSFER  → toolExecutors.get("transferFunds")
        ├─ RECEIVE   → toolExecutors.get("receiveFunds")
        └─ MANDATE   → toolExecutors.get("switchMandate")
             └─ DefaultToolExecutor.execute(ToolExecutionRequest, sessionId)
                  └─ @Tool method in LedgerTools
                       └─ MongoLedgerService (ACID commit)
+  └─ Stage 4: StreamingSupervisor formats response
 ```
 
 **Query Path** (`QUERY_BALANCE`, `QUERY_TRANSACTIONS`, `QUERY_SEARCH`)
 
-Routed when `intent.isQueryTool()`:
+Routed when `intent.isQueryTool()` — skips Stage 2 (fraud):
 
 ```
 orchestrateSwitch / orchestrateSwitchStreaming
@@ -236,7 +271,7 @@ When intent is neither transactional nor a query tool, the request falls through
            │
     ┌──────▼────────────┐
     │      Ollama       │
-    │    qwen2.5:3b     │
+    │  qwen2.5:latest   │
     │      11434        │
     └───────────────────┘
            │
@@ -326,7 +361,7 @@ RERANKER_MODEL_NAME=rerank-lite-1   # Lightweight reranker
 
 # Local LLM (Ollama)
 LLM_BASE_URL=http://ollama:11434
-LLM_MODEL_NAME=qwen2.5:3b
+LLM_MODEL_NAME=qwen2.5:latest
 LLM_TIMEOUT_SECONDS=900
 LLM_NUM_CTX=8192
 
@@ -632,7 +667,25 @@ On receiving a `CHANNEL_MISMATCH:` sentinel the LLM **automatically re-invokes t
 
 ### 5.3 Risk Profile Rules
 
-Based on the behavioral similarity score computed by `FraudContextService`.
+Based on the composite risk score computed by `FraudSignalAnalyzer` (in the `com.ayedata.fraud` package).
+
+All fraud parameters are externalized via `FraudConfig` and can be tuned via environment variables:
+
+| Parameter | Env Variable | Default |
+|-----------|-------------|--------|
+| High-value threshold | `FRAUD_HIGH_VALUE_THRESHOLD` | ₹5,000 |
+| Signal multipliers | `FRAUD_MULT_HIGH_VALUE`, `_GEO_ANOMALY`, `_NEW_DEVICE`, `_UNUSUAL_TIMING` | 0.8, 0.7, 0.6, 0.9 |
+| Approve threshold | `FRAUD_THRESHOLD_APPROVE` | 0.95 |
+| Monitor threshold | `FRAUD_THRESHOLD_MONITOR` | 0.80 |
+| Baseline score | `FRAUD_BASELINE_SCORE` | 0.95 |
+| Hardblock signals | `FRAUD_HARDBLOCK_SIGNALS` | `GEO_ANOMALY_DETECTED,NEW_DEVICE_PATTERN` |
+| Behavioral lookback | `FRAUD_BEHAVIORAL_LOOKBACK_DAYS` | 90 days |
+| Min transactions | `FRAUD_BEHAVIORAL_MIN_TRANSACTIONS` | 3 |
+
+**Behavioral Scoring** — `getBehavioralSimilarityScore()` queries the user’s completed transactions from the lookback window and computes:
+- **Amount consistency (60%)**: coefficient of variation — lower variance = higher score
+- **Frequency consistency (40%)**: transactions per week — more regular = higher score
+- Returns `0.0` when insufficient history (< min transactions), triggering the configurable baseline score
 
 | Behavioral Score | Profile | Effect on Routing |
 |---|---|---|
@@ -670,7 +723,7 @@ These rules are sourced from `indian-payment-regulatory-framework.txt` in the RA
 
 | Field | Rule | Enforced In |
 |---|---|---|
-| `userId` | Must match `^[a-zA-Z0-9_]{4,64}$` | `FraudContextService.getBehavioralSimilarityScore()` |
+| `userId` | Must match `^[a-zA-Z0-9_]{4,64}$` | `FraudSignalAnalyzer`, `LedgerTools` |
 | `sessionId` | Validated by regex; must not be null or blank | `PaSSController`, `MongoLedgerService` |
 | `beneficiary` | Required and non-blank for `transferFunds` | `MongoLedgerService.commitSwitchAtomic()` |
 | `bankName` | Required and non-blank for `switchMandate` | `MongoLedgerService.commitMandateAtomic()` |
@@ -785,7 +838,7 @@ Immutable audit trail for regulators:
   "related_transaction": "TXN_PASS_55443322",
   "event_type": "FRAUD_INTERVENTION",
   "timestamp": ISODate("2026-03-29T21:25:00Z"),
-  "model_used": "qwen2.5:3b",
+  "model_used": "qwen2.5:latest",
   "inputs": {
     "metadata_snapshot": {
       "network_latency": "400ms",
@@ -1665,28 +1718,42 @@ public class QueryableEncryptionService {
 
 The platform implements an intelligent fraud detection system that combines behavioral telemetry with contextual knowledge retrieved from RAG:
 
-#### FraudContextService Architecture
+### Fraud Detection Architecture (`com.ayedata.fraud`)
+
+The fraud detection system is implemented as a **dedicated LangChain4j agent** in its own package — separate from the main Supervisor agent. It runs as **Stage 2** in the multi-stage orchestration pipeline, between intent classification and tool execution.
+
+#### Package Components
+
+| Class | Responsibility |
+|-------|----------------|
+| `FraudAction` | Enum: `APPROVE`, `MONITOR`, `ESCALATE`, `BLOCK` |
+| `FraudAnalysisResult` | Record: `riskScore`, `behavioralScore`, `signals`, `action`, `ragContext` |
+| `FraudSignalAnalyzer` | Deterministic engine — RAG retrieval via `RagService`, regex/keyword signal detection, composite risk scoring |
+| `FraudTools` | 4 `@Tool` methods exposed to the Fraud Agent: `analyzeTransaction`, `checkBehavioralPattern`, `getRegulatoryContext`, `assessRiskLevel` |
+| `FraudAgent` | LangChain4j `AiServices` interface with `@SystemMessage` encoding action thresholds and analysis instructions |
+| `FraudAgentOrchestrator` | Builds the LangChain4j agent at `@PostConstruct`, exposes `analyze()`, `parseAgentResponse()`, `deterministicFallback()` |
+
+#### FraudAgentOrchestrator Architecture
 
 ```java
-@Service
-public class FraudContextService {
-    private final RagService ragService;
-    private final EmbeddingModel embeddingModel;
+@Component
+public class FraudAgentOrchestrator {
+    private FraudAgent fraudAgent;
+    private final FraudSignalAnalyzer signalAnalyzer;
 
-    public FraudAnalysisResult analyzeFraudContext(String userId, String userIntent, double behavioralScore) {
-        // Retrieve fraud patterns from RAG
-        String ragContext = ragService.retrieveContext("fraud detection " + userIntent, 2);
-        
-        // Analyze fraud signals
-        List<String> fraudSignals = detectFraudSignals(userIntent, behavioralScore);
-        
-        // Compute composite risk score
-        double riskScore = calculateCompositeRisk(behavioralScore, fraudSignals);
-        
-        // Determine action
-        FraudAction action = determineAction(riskScore, fraudSignals);
-        
-        return new FraudAnalysisResult(riskScore, behavioralScore, fraudSignals, action, ragContext);
+    @PostConstruct
+    public void init() {
+        fraudAgent = AiServices.builder(FraudAgent.class)
+            .chatModel(chatLanguageModel)
+            .tools(new FraudTools(signalAnalyzer))
+            .build();
+    }
+
+    public FraudAnalysisResult analyze(String userId, String userIntent, double amount, String channel) {
+        // 1. Run LangChain4j Fraud Agent with @Tool methods
+        // 2. Parse structured response
+        // 3. Fallback to deterministic analysis if LLM fails
+        return fraudResult;
     }
 }
 ```
@@ -1714,16 +1781,18 @@ riskScore = behavioralScore × signalPenalties
 | < 0.80 | ESCALATE | Route to HITL for human approval |
 | Critical signals | BLOCK | Immediate rejection |
 
-#### Integration with Transaction Flow
+#### Integration with Orchestration Pipeline
 
-Fraud analysis is integrated into `MongoLedgerService.commitSwitchAtomic()`:
+Fraud analysis runs as **Stage 2** in `PaSSOrchestratorAgent`:
 
-1. **Pre-commit Analysis**: `FraudContextService.analyzeFraudContext()` called before balance debits
-2. **Action Enforcement**: 
-   - `BLOCK` → Transaction rejected with fraud alert
-   - `ESCALATE` → HITL flag set, transaction held for approval
-   - `MONITOR/APPROVE` → Transaction proceeds with audit logging
-3. **Audit Trail**: All fraud signals, RAG context, and risk scores stored in `AgentReasoning` domain
+1. **Pre-execution Analysis**: `FraudAgentOrchestrator.analyze()` called after classification but before any ACID tool execution
+2. **SSE Events**: `fraud_analyzing` → `fraud_analyzed` emitted to the browser with risk score, signals, and action
+3. **Action Enforcement**: 
+   - `BLOCK` → Pipeline short-circuits with `SyntheticTokenStream` rejection message (Stages 3–4 skipped)
+   - `ESCALATE` → HITL flag set, transaction held for human approval
+   - `MONITOR/APPROVE` → Transaction proceeds; result cached via `ledgerTools.cacheFraudResult(sessionId, fraudResult)`
+4. **Fraud Result Caching**: Results stored in `ConcurrentHashMap` in `LedgerTools` to prevent double analysis when the tool executes
+5. **Audit Trail**: All fraud signals, RAG context, and risk scores stored in `AgentReasoning` domain
 
 #### RAG Knowledge Base
 
@@ -1869,11 +1938,11 @@ app.http.request.timeout.seconds=30
 
 ## 13. Testing & Quality
 
-### Unit Tests (24 tests - all passing)
+### Unit Tests (33 tests - all passing)
 
 - MongoLedgerServiceTest (11 tests)
-- HitlEscalationServiceTest (5 tests) ✨ NEW HITL Tests
-- FraudContextServiceTest (8 tests)
+- HitlEscalationServiceTest (5 tests)
+- FraudSignalAnalyzerTest (17 tests)
 
 ### Test Categories
 
@@ -2102,7 +2171,7 @@ docker logs api-gateway | grep 'Supervisor Agent initialized'
 ## 16. Future Enhancements
 
 - [ ] Spring Security + JWT authentication (currently no auth — sessionId is client-provided)
-- [ ] Production LLM upgrade from `qwen2.5:3b` to a larger or API-hosted model for higher tool-call accuracy
+- [ ] Production LLM upgrade from `qwen2.5:latest` to a larger or API-hosted model for higher tool-call accuracy
 - [ ] Multi-language LLM support
 - [ ] Advanced anomaly detection with statistical baselines
 - [ ] Custom fraud rule engine alongside AI reasoning

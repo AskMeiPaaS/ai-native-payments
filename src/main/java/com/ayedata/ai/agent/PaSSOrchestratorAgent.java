@@ -2,6 +2,9 @@ package com.ayedata.ai.agent;
 
 import com.ayedata.ai.tools.LedgerTools;
 import com.ayedata.config.MongoChatMemoryStore;
+import com.ayedata.fraud.FraudAction;
+import com.ayedata.fraud.FraudAgentOrchestrator;
+import com.ayedata.fraud.FraudAnalysisResult;
 import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.TemporalMemoryService;
@@ -37,10 +40,11 @@ import java.util.function.BiConsumer;
  * PaSS Orchestrator Agent: Supervisor backed by MongoDB chat memory,
  * temporal memory recall, and RAG-enriched context.
  *
- * Two-fold orchestration:
+ * Multi-stage orchestration:
  *   Step 1: LangChain4j IntentClassifier — lightweight LLM call to classify intent + extract params
- *   Step 2: Execute LangChain4j @Tool methods directly based on extracted params
- *   Step 3: LangChain4j FormattingSupervisor — stream the formatted result to the user
+ *   Step 2: Fraud Detection — LangChain4j Fraud Agent analyses transactional intents (skipped for queries)
+ *   Step 3: Execute LangChain4j @Tool methods directly based on extracted params
+ *   Step 4: LangChain4j FormattingSupervisor — stream the formatted result to the user
  *
  * @see ContextEnricher  — builds enriched intent with RAG + temporal context
  * @see MongoChatMemoryStore — per-session 10-message window in MongoDB
@@ -50,6 +54,7 @@ public class PaSSOrchestratorAgent {
     private static final Logger log = LoggerFactory.getLogger(PaSSOrchestratorAgent.class);
 
     private final LedgerTools ledgerTools;
+    private final FraudAgentOrchestrator fraudAgentOrchestrator;
     private final OllamaChatModel chatLanguageModel;
     private final OllamaStreamingChatModel streamingChatModel;
     private final MongoChatMemoryStore chatMemoryStore;
@@ -76,6 +81,7 @@ public class PaSSOrchestratorAgent {
     private final ExecutorService archiveExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     public PaSSOrchestratorAgent(LedgerTools ledgerTools,
+                                 FraudAgentOrchestrator fraudAgentOrchestrator,
                                  OllamaChatModel chatLanguageModel,
                                  OllamaStreamingChatModel streamingChatModel,
                                  MongoChatMemoryStore chatMemoryStore,
@@ -83,6 +89,7 @@ public class PaSSOrchestratorAgent {
                                  TemporalMemoryService temporalMemoryService,
                                  AccountBalanceService accountBalanceService) {
         this.ledgerTools = ledgerTools;
+        this.fraudAgentOrchestrator = fraudAgentOrchestrator;
         this.chatLanguageModel = chatLanguageModel;
         this.streamingChatModel = streamingChatModel;
         this.chatMemoryStore = chatMemoryStore;
@@ -137,21 +144,14 @@ public class PaSSOrchestratorAgent {
             - When a person's name appears in a query, use QUERY_SEARCH with BENEFICIARY set to that person.
             - Use QUERY_TRANSACTIONS for listing/filtering transactions without a specific person.
             - Use QUERY_BALANCE only for balance inquiries with no person mentioned.
-            - CONFIDENCE: HIGH when intent, amount, beneficiary, and channel are all unambiguous.
-            - CONFIDENCE: MEDIUM when most fields are clear but one is inferred or defaulted.
-            - CONFIDENCE: LOW when the request is vague, ambiguous, or missing critical details.
+            - CONFIDENCE: HIGH when all fields are unambiguous; MEDIUM when one is inferred; LOW when vague.
 
             Examples:
             - "what is my balance" → ACTION: QUERY_BALANCE, CONFIDENCE: HIGH
-            - "show my transactions" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: HIGH
-            - "show only credits" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: HIGH
             - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: HIGH
-            - "total debits and credits" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: HIGH
-            - "transactions this week" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: HIGH
-            - "did I pay Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CONFIDENCE: HIGH
             - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CONFIDENCE: HIGH
-            - "credits from Arjun" → ACTION: QUERY_SEARCH, BENEFICIARY: Arjun, CONFIDENCE: HIGH
             - "pay 5000 to Ramesh via UPI" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: HIGH
+            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CONFIDENCE: HIGH
             - "send money to Ramesh" → ACTION: TRANSFER, BENEFICIARY: Ramesh, AMOUNT: 0, CONFIDENCE: LOW
             """;
 
@@ -197,7 +197,7 @@ public class PaSSOrchestratorAgent {
                         .chatModel(chatLanguageModel)
                         .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
                                 .id(memId)
-                                .maxMessages(6)
+                                .maxMessages(4)
                                 .chatMemoryStore(chatMemoryStore)
                                 .build())
                         .tools(ledgerTools)
@@ -211,7 +211,7 @@ public class PaSSOrchestratorAgent {
                         .chatModel(chatLanguageModel)
                         .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
                                 .id(memId)
-                                .maxMessages(6)
+                                .maxMessages(4)
                                 .chatMemoryStore(chatMemoryStore)
                                 .build())
                         .build();
@@ -224,7 +224,7 @@ public class PaSSOrchestratorAgent {
                         .streamingChatModel(streamingChatModel)
                         .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
                                 .id(memId)
-                                .maxMessages(6)
+                                .maxMessages(4)
                                 .chatMemoryStore(chatMemoryStore)
                                 .build())
                         .tools(ledgerTools)
@@ -237,7 +237,7 @@ public class PaSSOrchestratorAgent {
                         .streamingChatModel(streamingChatModel)
                         .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
                                 .id(memId)
-                                .maxMessages(6)
+                                .maxMessages(4)
                                 .chatMemoryStore(chatMemoryStore)
                                 .build())
                         .build();
@@ -319,7 +319,24 @@ public class PaSSOrchestratorAgent {
                 return supervisor.orchestrate(sessionId, enrichedIntent);
             }
 
-            // Step 2+3: Execute and format.
+            // Step 2: Fraud detection (transactional intents only)
+            if (intent.isTransactional()) {
+                log.info("Session {}: Step 2 — fraud analysis (amount=₹{} beneficiary={} channel={})",
+                        sessionId, intent.amount(), intent.beneficiary(), intent.channel());
+                FraudAnalysisResult fraudResult = fraudAgentOrchestrator.analyze(
+                        sessionId, userId, userIntent, intent.amount(), intent.beneficiary(), intent.channel());
+                ledgerTools.cacheFraudResult(sessionId, fraudResult);
+                log.info("Session {}: Fraud analysis: score={} action={} signals={}",
+                        sessionId, fraudResult.riskScore(), fraudResult.action(), fraudResult.fraudSignals());
+
+                if (fraudResult.action() == FraudAction.BLOCK) {
+                    return String.format(
+                            "TRANSACTION_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                            fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals()));
+                }
+            }
+
+            // Step 3 (or 2): Execute and format.
             // HIGH confidence → LLM-led tool orchestration (Supervisor decides tools).
             // MEDIUM/LOW confidence → deterministic Java execution for reliability.
             String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
@@ -393,6 +410,9 @@ public class PaSSOrchestratorAgent {
 
         String classifierCtx = buildClassifierContext(userId, userIntent);
         ParsedIntent intent;
+        boolean needsFraud;
+        int totalSteps;
+        int stepOffset;
         try {
             log.info("Session {}: Step 1 — classifying intent ({} chars)...", sessionId, classifierCtx.length());
             ClassificationResult cr = classifyWithRetry(sessionId, classifierCtx);
@@ -402,10 +422,16 @@ public class PaSSOrchestratorAgent {
             log.info("Session {}: Parsed → action={} beneficiary={} amount={} channel={} confidence={}",
                     sessionId, intent.action(), intent.beneficiary(), intent.amount(), intent.channel(), intent.confidence());
 
+            // Compute total steps based on path: transactional intents get a fraud stage
+            needsFraud = intent.isTransactional();
+            boolean willBeDeterministic = !intent.isHighConfidence() && (intent.isTransactional() || intent.isQueryTool());
+            totalSteps = willBeDeterministic ? (needsFraud ? 4 : 3) : (needsFraud ? 3 : 2);
+            stepOffset = needsFraud ? 1 : 0; // shifts execute/format steps when fraud is present
+
             Map<String, Object> classifiedData = new java.util.LinkedHashMap<>();
             classifiedData.put("message", formatClassifiedMessage(intent));
             classifiedData.put("step", 1);
-            classifiedData.put("totalSteps", 3);
+            classifiedData.put("totalSteps", totalSteps);
             classifiedData.put("action", intent.action());
             classifiedData.put("amount", intent.amount());
             classifiedData.put("beneficiary", intent.beneficiary());
@@ -424,18 +450,62 @@ public class PaSSOrchestratorAgent {
             return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
         }
 
-        // ── Step 2+3: Execute and stream response ──
+        // ── Step 2: Fraud detection (transactional intents only) ──
+        if (needsFraud) {
+            stageCallback.accept("fraud_analyzing", Map.of(
+                    "message", "Step 2 · Analyzing fraud risk...",
+                    "step", 2, "totalSteps", totalSteps));
+
+            log.info("Session {}: Step 2 — fraud analysis (amount=₹{} beneficiary={} channel={})",
+                    sessionId, intent.amount(), intent.beneficiary(), intent.channel());
+            long fraudStart = System.currentTimeMillis();
+
+            FraudAnalysisResult fraudResult = fraudAgentOrchestrator.analyze(
+                    sessionId, userId, userIntent, intent.amount(), intent.beneficiary(), intent.channel());
+
+            long fraudElapsedMs = System.currentTimeMillis() - fraudStart;
+            log.info("Session {}: Fraud analysis complete ({}ms): score={} action={} signals={}",
+                    sessionId, fraudElapsedMs, fraudResult.riskScore(), fraudResult.action(), fraudResult.fraudSignals());
+
+            // Cache result so LedgerTools skips duplicate analysis during tool execution
+            ledgerTools.cacheFraudResult(sessionId, fraudResult);
+
+            Map<String, Object> fraudData = new java.util.LinkedHashMap<>();
+            fraudData.put("message", String.format("Step 2 · Fraud Score: %.2f (%s)",
+                    fraudResult.riskScore(), fraudResult.action()));
+            fraudData.put("step", 2);
+            fraudData.put("totalSteps", totalSteps);
+            fraudData.put("riskScore", fraudResult.riskScore());
+            fraudData.put("behavioralScore", fraudResult.behavioralScore());
+            fraudData.put("action", fraudResult.action().toString());
+            fraudData.put("signals", fraudResult.fraudSignals());
+            fraudData.put("fraudElapsedMs", fraudElapsedMs);
+
+            if (fraudResult.action() == FraudAction.BLOCK) {
+                fraudData.put("blocked", true);
+                stageCallback.accept("fraud_analyzed", fraudData);
+                return new SyntheticTokenStream(String.format(
+                        "TRANSACTION_BLOCKED: Fraud detection blocked this transaction. Risk score: %.2f, Signals: %s",
+                        fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+            }
+
+            stageCallback.accept("fraud_analyzed", fraudData);
+        }
+
+        // ── Step 3 (or 2): Execute and stream response ──
         // HIGH confidence → LLM-led tool orchestration (StreamingSupervisor decides tools).
         // MEDIUM/LOW confidence → deterministic Java execution for reliability.
+        int execStep = 2 + stepOffset;
+        int fmtStep  = 3 + stepOffset;
         String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
 
         if (!intent.isHighConfidence() && (intent.isTransactional() || intent.isQueryTool())) {
             // Deterministic fallback
-            log.info("Session {}: Step 2 — deterministic fallback (confidence={}, action={})",
-                    sessionId, intent.confidence(), intent.action());
+            log.info("Session {}: Step {} — deterministic fallback (confidence={}, action={})",
+                    sessionId, execStep, intent.confidence(), intent.action());
             stageCallback.accept("executing", Map.of(
-                    "message", "Step 2 · Deterministic execution (confidence: " + intent.confidence() + ")...",
-                    "step", 2, "totalSteps", 3,
+                    "message", String.format("Step %d · Deterministic execution (confidence: %s)...", execStep, intent.confidence()),
+                    "step", execStep, "totalSteps", totalSteps,
                     "action", intent.action(),
                     "confidence", intent.confidence()));
             long step2Start = System.currentTimeMillis();
@@ -448,19 +518,20 @@ public class PaSSOrchestratorAgent {
                     String extractedChannel = DeterministicToolExecutor.extractChannelFromResult(toolResult);
                     Map<String, Object> execData = new java.util.LinkedHashMap<>();
                     execData.put("message", success
-                            ? String.format("Step 2 · %s %s complete.",
+                            ? String.format("Step %d · %s %s complete.", execStep,
                                     intent.action(), extractedChannel != null ? "via " + extractedChannel : "")
-                            : "Step 2 · Tool returned: " + toolResult.substring(0, Math.min(toolResult.length(), 80)));
-                    execData.put("step", 2);
-                    execData.put("totalSteps", 3);
+                            : String.format("Step %d · Tool returned: %s", execStep,
+                                    toolResult.substring(0, Math.min(toolResult.length(), 80))));
+                    execData.put("step", execStep);
+                    execData.put("totalSteps", totalSteps);
                     execData.put("success", success);
                     execData.put("step2ElapsedMs", step2ElapsedMs);
                     if (extractedChannel != null) execData.put("channel", extractedChannel);
                     stageCallback.accept("executed", execData);
 
                     stageCallback.accept("formatting", Map.of(
-                            "message", "Step 3 · Streaming result...",
-                            "step", 3, "totalSteps", 3));
+                            "message", String.format("Step %d · Streaming result...", fmtStep),
+                            "step", fmtStep, "totalSteps", totalSteps));
                     return new SyntheticTokenStream(toolResult);
                 }
                 // Null result — fall through to LLM
@@ -474,13 +545,13 @@ public class PaSSOrchestratorAgent {
 
         // LLM-led path (HIGH confidence, general queries, or deterministic fallback failure)
         stageCallback.accept("executing", Map.of(
-                "message", "Step 2 · AI orchestrating tool execution...",
-                "step", 2, "totalSteps", 2,
+                "message", String.format("Step %d · AI orchestrating tool execution...", execStep),
+                "step", execStep, "totalSteps", totalSteps,
                 "action", intent.action(),
                 "confidence", intent.confidence()));
 
-        log.info("Session {}: Step 2+3 — LLM-led tool execution with streaming (confidence={}, action={}, enriched={}chars)",
-                sessionId, intent.confidence(), intent.action(), enrichedIntent.length());
+        log.info("Session {}: Step {} — LLM-led tool execution with streaming (confidence={}, action={}, enriched={}chars)",
+                sessionId, execStep, intent.confidence(), intent.action(), enrichedIntent.length());
         return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
     }
 

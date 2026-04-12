@@ -22,6 +22,7 @@ interface Message {
   stageLines?: string[]; // Accumulated completed-stage summaries shown in progress bubble
   channelOptions?: string[]; // Valid channels shown on CHANNEL_MISMATCH
   originalIntent?: string;   // Original user message for channel re-submission
+  channelSource?: 'user' | 'rag'; // How the channel was selected
 }
 
 /** Canonical channel names the LLM or tool response may mention. */
@@ -153,6 +154,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
   } | null>(null);
   const [stageBanner, setStageBanner] = useState<StageBannerRow[]>([]);
   const [chatBlocked, setChatBlocked] = useState(false);
+  const pendingUserChannelRef = useRef(false);
 
   // Resolve effective userId for API calls (declared early for localStorage keys)
   const effectiveUserId = userId || 'demo-user';
@@ -507,6 +509,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                     : '🔍';
 
                   // Build a compact summary for completed ("done") stage events
+                  const channelSuffix = pendingUserChannelRef.current ? 'User Selected' : 'via RAG+LLM';
                   let doneLine: string | null = null;
                   switch (stageName) {
                     case 'classified': {
@@ -516,7 +519,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       if (jsonData.beneficiary && jsonData.beneficiary !== 'none') p.push(`→ ${jsonData.beneficiary}`);
                       doneLine = `🔍 ${p.join(' ') || stageMsg}`;
                       if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
-                        doneLine += `\n📡 ${jsonData.channel} via RAG+LLM`;
+                        doneLine += `\n📡 ${jsonData.channel} ${channelSuffix}`;
                       }
                       break;
                     }
@@ -535,7 +538,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                     case 'executed':
                       doneLine = `⚡ ${stageMsg}`;
                       if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
-                        doneLine += `\n📡 ${jsonData.channel} via RAG+LLM`;
+                        doneLine += `\n📡 ${jsonData.channel} ${channelSuffix}`;
                       }
                       break;
                     case 'channel_mismatch':
@@ -653,7 +656,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       if (jsonData.confidence) parts.push(`(${jsonData.confidence})`);
                       upsert('classify', '🔍', 'Classification', parts.join(' ') || stageMsg, 'done');
                       if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
-                        upsert('channel', '📡', 'Channel', `${jsonData.channel} via RAG+LLM`, 'done');
+                        upsert('channel', '📡', 'Channel', `${jsonData.channel} ${channelSuffix}`, 'done');
                       }
                       break;
                     }
@@ -674,7 +677,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       upsert('execute', '⚡', 'Tool Execution', stageMsg,
                         jsonData.success === false ? 'error' : 'done');
                       if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
-                        upsert('channel', '📡', 'Channel', `${jsonData.channel} via RAG+LLM`, 'done');
+                        upsert('channel', '📡', 'Channel', `${jsonData.channel} ${channelSuffix}`, 'done');
                       }
                       break;
                     case 'formatting':
@@ -736,6 +739,10 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       const inheritedFraudAction = waitMsg2?.fraudAction;
                       const inheritedChannelOptions = waitMsg2?.channelOptions;
                       const inheritedOriginalIntent = waitMsg2?.originalIntent;
+                      const inheritedChannelSource = waitMsg2?.channelSource;
+                      // Check if this response was triggered by user channel selection
+                      const channelSource = pendingUserChannelRef.current ? 'user' as const : (inheritedChannelSource || undefined);
+                      if (pendingUserChannelRef.current) pendingUserChannelRef.current = false;
                       return [
                         ...prev.filter((m) => m.id !== waitMsgId),
                         {
@@ -746,6 +753,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           ...(inheritedChannel ? { channel: inheritedChannel } : {}),
                           ...(inheritedFraudScore !== undefined ? { fraudScore: inheritedFraudScore, fraudAction: inheritedFraudAction } : {}),
                           ...(inheritedChannelOptions ? { channelOptions: inheritedChannelOptions, originalIntent: inheritedOriginalIntent } : {}),
+                          ...(channelSource ? { channelSource } : {}),
                         },
                       ];
                     }
@@ -970,7 +978,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                             <div className="channel-badge" data-ch={msg.channel || msg.stageChannel}>
                               <span className="channel-badge__dot" />
                               <span className="channel-badge__label">{msg.channel || msg.stageChannel}</span>
-                              <span className="channel-badge__suffix">via RAG+LLM</span>
+                              <span className="channel-badge__suffix">{msg.channelSource === 'user' ? 'User Selected' : 'via RAG+LLM'}</span>
                             </div>
                           )}
                           {msg.fraudScore !== undefined && (
@@ -996,7 +1004,10 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                                 key={ch}
                                 className="channel-picker__btn"
                                 onClick={() => {
-                                  const intent = msg.originalIntent || '';
+                                  const rawIntent = msg.originalIntent || '';
+                                  // Strip any existing "via <CHANNEL>" so we don't get duplicates
+                                  const intent = rawIntent.replace(/\s+via\s+\S+/gi, '').trim();
+                                  pendingUserChannelRef.current = true;
                                   handleSendMessage(`${intent} via ${ch}`);
                                   setMessages((prev) =>
                                     prev.map((m) =>

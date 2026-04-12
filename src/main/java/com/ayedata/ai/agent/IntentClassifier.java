@@ -144,17 +144,13 @@ public class IntentClassifier {
             ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
             BENEFICIARY: person name or none
             AMOUNT: number or 0
-            CHANNEL: one of [%s]
+            CHANNEL: one of [%s] or UNKNOWN
             CONFIDENCE: HIGH or MEDIUM or LOW
 
             Rules:
-            - CHANNEL must be EXACTLY one of: %s. Never invent channel names.
-            - If the user explicitly names a channel (e.g. "via UPI", "through NEFT"), return that channel.
-            - If the user does NOT specify a channel, select the best one based on the amount:
-              * Amount ≤ 500        → UPI Lite
-              * Amount ≤ 100000     → UPI
-              * Amount < 200000     → NEFT
-              * Amount ≥ 200000     → RTGS
+            - CHANNEL must be EXACTLY one of: %s, or UNKNOWN. Never invent channel names.
+            - If the user EXPLICITLY names a channel (e.g. "via UPI", "through NEFT", "using UPI Lite"), return that exact channel.
+            - If the user does NOT explicitly mention a channel name, ALWAYS return CHANNEL: UNKNOWN. The system will auto-select the optimal channel based on the amount. Do NOT guess a channel.
             - For non-transactional actions (QUERY_BALANCE, QUERY_TRANSACTIONS, QUERY_SEARCH, QUERY), use CHANNEL: UNKNOWN.
             - When a person's name appears in a query, use QUERY_SEARCH with BENEFICIARY set to that person.
             - Use QUERY_TRANSACTIONS for listing/filtering transactions without a specific person.
@@ -168,15 +164,16 @@ public class IntentClassifier {
             - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
             - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
             - "pay 5000 to Ramesh via UPI" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: MEDIUM
-            - "pay 5000 to Ramesh" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: MEDIUM
-            - "send 200 to Priya" → ACTION: TRANSFER, AMOUNT: 200, BENEFICIARY: Priya, CHANNEL: UPI Lite, CONFIDENCE: MEDIUM
-            - "transfer 150000 to Ramesh" → ACTION: TRANSFER, AMOUNT: 150000, BENEFICIARY: Ramesh, CHANNEL: NEFT, CONFIDENCE: MEDIUM
-            - "send 500000 to Priya" → ACTION: TRANSFER, AMOUNT: 500000, BENEFICIARY: Priya, CHANNEL: RTGS, CONFIDENCE: MEDIUM
-            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CHANNEL: UPI, CONFIDENCE: MEDIUM
+            - "pay 5000 to Ramesh" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "send 200 to Priya" → ACTION: TRANSFER, AMOUNT: 200, BENEFICIARY: Priya, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "send 200 to Priya via UPI Lite" → ACTION: TRANSFER, AMOUNT: 200, BENEFICIARY: Priya, CHANNEL: UPI Lite, CONFIDENCE: MEDIUM
+            - "transfer 150000 to Ramesh" → ACTION: TRANSFER, AMOUNT: 150000, BENEFICIARY: Ramesh, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "send 500000 to Priya through RTGS" → ACTION: TRANSFER, AMOUNT: 500000, BENEFICIARY: Priya, CHANNEL: RTGS, CONFIDENCE: MEDIUM
+            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
             - "send money to Ramesh" → ACTION: TRANSFER, BENEFICIARY: Ramesh, AMOUNT: 0, CHANNEL: UNKNOWN, CONFIDENCE: LOW
             - "hello, how are you" → ACTION: QUERY, CONFIDENCE: HIGH
             - "what is PaSS" → ACTION: QUERY, CONFIDENCE: HIGH
-            - "transfer 2000 to Priya" → ACTION: TRANSFER, AMOUNT: 2000, BENEFICIARY: Priya, CHANNEL: UPI, CONFIDENCE: MEDIUM
+            - "transfer 2000 to Priya" → ACTION: TRANSFER, AMOUNT: 2000, BENEFICIARY: Priya, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
             """.formatted(channelList, channelList);
     }
 
@@ -242,5 +239,18 @@ public class IntentClassifier {
             case "MANDATE"  -> "Step 1 · Mandate switch for " + intent.beneficiary();
             default -> "Step 1 · " + intent.action();
         };
+    }
+
+    /**
+     * Check if the user's raw message explicitly mentions a payment channel name.
+     * Matches patterns like "via UPI", "through NEFT", "using UPI Lite", or bare channel names.
+     */
+    boolean userMentionsChannel(String userIntent) {
+        if (userIntent == null || userIntent.isBlank()) return false;
+        String upper = userIntent.toUpperCase();
+        for (String ch : supportedChannels) {
+            if (upper.contains(ch.toUpperCase())) return true;
+        }
+        return false;
     }
 }

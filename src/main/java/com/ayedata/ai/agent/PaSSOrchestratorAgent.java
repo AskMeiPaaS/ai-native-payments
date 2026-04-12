@@ -276,9 +276,15 @@ public class PaSSOrchestratorAgent {
                 return supervisor.orchestrate(sessionId, enrichedIntent);
             }
 
-            // Channel UNKNOWN is fine — LedgerTools auto-selects the optimal channel for the amount
+            // Channel UNKNOWN → ask user to pick a channel
             if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
-                log.info("Session {}: Channel not specified — tools will auto-select based on amount", sessionId);
+                log.info("Session {}: Channel not specified — asking user to select", sessionId);
+                java.util.List<String> validChannels = LedgerTools.validChannelsForAmount(intent.amount());
+                String channelList = String.join(", ", validChannels);
+                return String.format(
+                        "Please select a payment channel for your ₹%.2f transfer to %s. "
+                        + "Available channels: %s.",
+                        intent.amount(), intent.beneficiary(), channelList);
             }
 
             // Channel mismatch check (user explicitly chose an incompatible channel)
@@ -335,9 +341,11 @@ public class PaSSOrchestratorAgent {
                         sessionId, intent.action(), enrichedIntent.length());
                 reply = supervisor.orchestrate(sessionId, enrichedIntent);
                 log.debug("✅ Session {}: LLM-led orchestration completed", sessionId);
-            } else if (intent.isTransactional() || intent.isQueryTool()) {
-                log.info("Session {}: Step 2 — deterministic fallback (confidence={}, action={})",
-                        sessionId, intent.confidence(), intent.action());
+            } else if ((intent.isTransactional() || intent.isQueryTool())
+                       && !"UNKNOWN".equalsIgnoreCase(intent.channel())) {
+                // Deterministic path: only when channel is already known (user-specified or previously selected)
+                log.info("Session {}: Step 2 — deterministic fallback (confidence={}, action={}, channel={})",
+                        sessionId, intent.confidence(), intent.action(), intent.channel());
                 String toolResult = deterministicExecutor.executeToolDirectly(sessionId, intent, userIntent);
                 if (toolResult != null) {
                     reply = toolResult;
@@ -405,9 +413,24 @@ public class PaSSOrchestratorAgent {
             IntentClassifier.ClassificationResult cr = classifier.classify(sessionId, userId, userIntent);
             intent = cr.intent();
 
-            // Channel UNKNOWN is fine — LedgerTools auto-selects the optimal channel for the amount
+            // Channel UNKNOWN → ask user to pick a channel (show picker via channel_select stage)
             if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
-                log.info("Session {}: Channel not specified — tools will auto-select based on amount", sessionId);
+                log.info("Session {}: Channel not specified — asking user to select", sessionId);
+                java.util.List<String> validChannels = LedgerTools.validChannelsForAmount(intent.amount());
+                Map<String, Object> selectData = new java.util.LinkedHashMap<>();
+                selectData.put("message", String.format("Please select a payment channel for ₹%.2f to %s",
+                        intent.amount(), intent.beneficiary()));
+                selectData.put("amount", intent.amount());
+                selectData.put("beneficiary", intent.beneficiary());
+                selectData.put("action", intent.action());
+                selectData.put("validChannels", validChannels);
+                selectData.put("originalIntent", userIntent);
+                stageCallback.accept("channel_mismatch", selectData);
+                String channelList = String.join(", ", validChannels);
+                return new SyntheticTokenStream(String.format(
+                        "Please select a payment channel for your ₹%.2f transfer to %s. "
+                        + "Available channels: %s.",
+                        intent.amount(), intent.beneficiary(), channelList));
             }
 
             // Compute total steps based on path: transactional intents get a fraud stage
@@ -525,10 +548,12 @@ public class PaSSOrchestratorAgent {
         int fmtStep  = 3 + stepOffset;
         String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
 
-        if (!intent.isHighConfidence() && (intent.isTransactional() || intent.isQueryTool())) {
-            // Deterministic fallback
-            log.info("Session {}: Step {} — deterministic fallback (confidence={}, action={})",
-                    sessionId, execStep, intent.confidence(), intent.action());
+        if (!intent.isHighConfidence() && (intent.isTransactional() || intent.isQueryTool())
+                && !"UNKNOWN".equalsIgnoreCase(intent.channel())) {
+            // Deterministic path: only when channel is already known (user-specified)
+            // When channel is UNKNOWN, fall through to LLM-led path so RAG context drives channel selection
+            log.info("Session {}: Step {} — deterministic fallback (confidence={}, action={}, channel={})",
+                    sessionId, execStep, intent.confidence(), intent.action(), intent.channel());
             stageCallback.accept("executing", Map.of(
                     "message", String.format("Step %d · Deterministic execution (confidence: %s)...", execStep, intent.confidence()),
                     "step", execStep, "totalSteps", totalSteps,

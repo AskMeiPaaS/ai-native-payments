@@ -54,7 +54,7 @@ public class FraudTools {
     }
 
     @Tool("Compute composite risk score from behavioral score and detected fraud signals. " +
-          "Also determines the action: APPROVE (≥0.90), MONITOR (0.80-0.89), ESCALATE (0.65-0.79), BLOCK (<0.65 or hardblock signals).")
+          "Also determines the action: APPROVE (<0.30), MONITOR (0.30-0.49), ESCALATE (0.50-0.69), BLOCK (≥0.70 or hardblock signals).")
     public String computeRiskAndAction(
             @P("Behavioral similarity score (0.0-1.0), use 0.0 if unknown") double behavioralScore,
             @P("Comma-separated fraud signal names, or NONE") String signalsCsv) {

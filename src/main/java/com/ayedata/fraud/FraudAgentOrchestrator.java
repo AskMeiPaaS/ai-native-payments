@@ -106,17 +106,14 @@ public class FraudAgentOrchestrator {
                                                     String intent, double amount,
                                                     String beneficiary, String channel) {
         Matcher decisionMatcher = DECISION_PATTERN.matcher(response);
-        Matcher riskMatcher = RISK_SCORE_PATTERN.matcher(response);
         Matcher signalsMatcher = SIGNALS_PATTERN.matcher(response);
 
-        if (!decisionMatcher.find() || !riskMatcher.find()) {
+        if (!decisionMatcher.find()) {
             log.warn("⚠️ Could not parse Fraud Agent response, falling back to deterministic");
             return deterministicFallback(sessionId, userId, intent, amount, beneficiary, channel);
         }
 
         FraudAction llmDecision = FraudAction.valueOf(decisionMatcher.group(1).toUpperCase());
-        double riskScore = Double.parseDouble(riskMatcher.group(1));
-        riskScore = Math.max(0.0, Math.min(1.0, riskScore));
 
         List<String> signals = List.of();
         if (signalsMatcher.find()) {
@@ -129,14 +126,26 @@ public class FraudAgentOrchestrator {
             }
         }
 
-        // Enforce threshold rules — never trust LLM decision blindly
+        // Re-compute risk score deterministically — never trust LLM-reported scores
+        double behavioralScore = fraudSignalAnalyzer.getBehavioralSimilarityScore(sessionId, userId);
+        double riskScore = fraudSignalAnalyzer.computeRiskScore(behavioralScore, signals);
         FraudAction action = fraudSignalAnalyzer.determineFraudAction(riskScore, signals);
+
+        // Log divergence between LLM-reported and deterministic scores
+        Matcher riskMatcher = RISK_SCORE_PATTERN.matcher(response);
+        if (riskMatcher.find()) {
+            double llmRiskScore = Double.parseDouble(riskMatcher.group(1));
+            if (Math.abs(llmRiskScore - riskScore) > 0.05) {
+                log.warn("⚠️ LLM reported risk={} but deterministic computed risk={} — using deterministic",
+                        llmRiskScore, riskScore);
+            }
+        }
+
         if (action != llmDecision) {
             log.warn("⚠️ LLM decision {} overridden to {} (risk={}, signals={})",
                     llmDecision, action, riskScore, signals);
         }
 
-        double behavioralScore = fraudSignalAnalyzer.getBehavioralSimilarityScore(sessionId, userId);
         String ragContext = fraudSignalAnalyzer.retrieveFraudPatterns(intent);
 
         log.info("✅ Fraud Agent decision: {} (risk={}, signals={})", action, riskScore, signals);

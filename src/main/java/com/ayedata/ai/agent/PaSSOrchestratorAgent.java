@@ -264,29 +264,21 @@ public class PaSSOrchestratorAgent {
 
         ledgerTools.registerSession(sessionId, userId);
         try {
-            // Check if this is a channel follow-up for a pending intent
-            ParsedIntent intent = classifier.checkPendingChannelIntent(sessionId, userIntent);
+            ParsedIntent intent;
 
-            if (intent == null) {
-                // Step 1: Classify
-                try {
-                    IntentClassifier.ClassificationResult cr = classifier.classify(sessionId, userId, userIntent);
-                    intent = cr.intent();
-                } catch (Exception e) {
-                    log.warn("Session {}: Classification failed after retries, falling back to supervisor", sessionId, e);
-                    String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
-                    return supervisor.orchestrate(sessionId, enrichedIntent);
-                }
+            // Step 1: Classify
+            try {
+                IntentClassifier.ClassificationResult cr = classifier.classify(sessionId, userId, userIntent);
+                intent = cr.intent();
+            } catch (Exception e) {
+                log.warn("Session {}: Classification failed after retries, falling back to supervisor", sessionId, e);
+                String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+                return supervisor.orchestrate(sessionId, enrichedIntent);
             }
 
-            // Channel clarification: if transactional and channel is UNKNOWN, ask user
+            // Channel UNKNOWN is fine — LedgerTools auto-selects the optimal channel for the amount
             if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
-                log.info("Session {}: Channel not specified — caching intent and asking user to confirm", sessionId);
-                classifier.cachePendingIntent(sessionId, intent);
-                String channelList = String.join(", ", classifier.getSupportedChannels());
-                return String.format(
-                    "I need to know which payment channel to use. Please reply with one of: %s.\n" +
-                    "For example: \"via UPI\" or \"use NEFT\".", channelList);
+                log.info("Session {}: Channel not specified — tools will auto-select based on amount", sessionId);
             }
 
             // Step 2: Fraud detection (transactional intents only)
@@ -383,31 +375,12 @@ public class PaSSOrchestratorAgent {
 
         ledgerTools.registerSession(sessionId, userId);
 
-        // ── Check if this is a channel follow-up for a pending intent ──
-        ParsedIntent intent = classifier.checkPendingChannelIntent(sessionId, userIntent);
+        // ── Step 1: Intent classification via LangChain4j (lightweight LLM call) ──
+        ParsedIntent intent;
         boolean needsFraud;
         int totalSteps;
         int stepOffset;
 
-        if (intent != null) {
-            needsFraud = intent.isTransactional();
-            boolean willBeDeterministic = !intent.isHighConfidence() && (intent.isTransactional() || intent.isQueryTool());
-            totalSteps = willBeDeterministic ? (needsFraud ? 4 : 3) : (needsFraud ? 3 : 2);
-            stepOffset = needsFraud ? 1 : 0;
-
-            Map<String, Object> classifiedData = new java.util.LinkedHashMap<>();
-            classifiedData.put("message", IntentClassifier.formatClassifiedMessage(intent));
-            classifiedData.put("step", 1);
-            classifiedData.put("totalSteps", totalSteps);
-            classifiedData.put("action", intent.action());
-            classifiedData.put("amount", intent.amount());
-            classifiedData.put("beneficiary", intent.beneficiary());
-            classifiedData.put("channel", intent.channel());
-            classifiedData.put("confidence", intent.confidence());
-            classifiedData.put("channelMerged", true);
-            stageCallback.accept("classified", classifiedData);
-        } else {
-        // ── Step 1: Intent classification via LangChain4j (lightweight LLM call) ──
         stageCallback.accept("classifying", Map.of(
                 "message", "Step 1 · Classifying your intent...",
                 "step", 1, "totalSteps", 3));
@@ -415,6 +388,11 @@ public class PaSSOrchestratorAgent {
         try {
             IntentClassifier.ClassificationResult cr = classifier.classify(sessionId, userId, userIntent);
             intent = cr.intent();
+
+            // Channel UNKNOWN is fine — LedgerTools auto-selects the optimal channel for the amount
+            if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
+                log.info("Session {}: Channel not specified — tools will auto-select based on amount", sessionId);
+            }
 
             // Compute total steps based on path: transactional intents get a fraud stage
             needsFraud = intent.isTransactional();
@@ -442,22 +420,6 @@ public class PaSSOrchestratorAgent {
                     "step", 1, "totalSteps", 1));
             String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
             return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
-        }
-        }
-
-        // ── Channel clarification: ask user to pick when channel is UNKNOWN ──
-        if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
-            log.info("Session {}: Channel UNKNOWN — caching intent and sending channel_required to frontend", sessionId);
-            classifier.cachePendingIntent(sessionId, intent);
-            Map<String, Object> channelData = new java.util.LinkedHashMap<>();
-            channelData.put("message", "Please select a payment channel to proceed.");
-            channelData.put("channels", classifier.getSupportedChannels());
-            stageCallback.accept("channel_required", channelData);
-
-            String channelList = String.join(", ", classifier.getSupportedChannels());
-            return new SyntheticTokenStream(String.format(
-                "I need to know which payment channel to use for this transaction. " +
-                "Please choose one: %s.", channelList));
         }
 
         // ── Step 2: Fraud detection (transactional intents only) ──

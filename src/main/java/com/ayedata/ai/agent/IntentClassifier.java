@@ -15,7 +15,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -40,14 +39,6 @@ public class IntentClassifier {
     private final List<String> supportedChannels;
     private final Set<String> supportedChannelsUpper;
 
-    /**
-     * Per-session cache for intents awaiting channel selection.
-     * When classifier returns CHANNEL: UNKNOWN, we store the parsed intent here.
-     * On the next message, if it looks like a channel reply, we merge it in
-     * instead of re-classifying from scratch (which loses context).
-     */
-    private final Map<String, ParsedIntent> pendingChannelIntents = new ConcurrentHashMap<>();
-
     /** Wraps classifier raw text output together with token usage metrics. */
     public record ClassificationResult(ParsedIntent intent, int inputTokens, int outputTokens) {}
 
@@ -65,37 +56,6 @@ public class IntentClassifier {
     /** Well-defined payment channels from env. */
     public List<String> getSupportedChannels() {
         return supportedChannels;
-    }
-
-    /**
-     * Check if this message is a channel follow-up for a pending intent.
-     * If a pending intent exists for the session and the message looks like a channel selection,
-     * merges the channel into the cached intent and returns it. Otherwise returns null.
-     */
-    public ParsedIntent checkPendingChannelIntent(String sessionId, String userIntent) {
-        ParsedIntent pending = pendingChannelIntents.remove(sessionId);
-        if (pending == null) return null;
-
-        String selectedChannel = extractChannelFromFollowUp(userIntent);
-        if (selectedChannel != null) {
-            ParsedIntent merged = new ParsedIntent(pending.action(), pending.beneficiary(),
-                    pending.amount(), selectedChannel, pending.confidence());
-            log.info("Session {}: Merged channel '{}' into pending intent → action={} amount={} beneficiary={}",
-                    sessionId, selectedChannel, merged.action(), merged.amount(), merged.beneficiary());
-            return merged;
-        }
-        // Not a channel reply — caller should re-classify the full new message
-        return null;
-    }
-
-    /**
-     * Cache a parsed intent for later channel selection.
-     * Called when classifier returns CHANNEL: UNKNOWN for a transactional intent.
-     */
-    public void cachePendingIntent(String sessionId, ParsedIntent intent) {
-        pendingChannelIntents.put(sessionId, intent);
-        log.info("Session {}: Cached pending intent for channel selection (action={} amount={} beneficiary={})",
-                sessionId, intent.action(), intent.amount(), intent.beneficiary());
     }
 
     /**
@@ -146,23 +106,6 @@ public class IntentClassifier {
     }
 
     /**
-     * Try to extract a payment channel from a short follow-up message like "via UPI", "NEFT", "use RTGS".
-     * Returns the canonical channel name if found, or null if the message doesn't look like a channel selection.
-     */
-    String extractChannelFromFollowUp(String message) {
-        if (message == null || message.isBlank()) return null;
-        String cleaned = message.strip()
-                .replaceAll("(?i)^(via|use|through|using|by|over|select|choose|pick|go with|i want|i'd like|let's go with)\\s+", "")
-                .replaceAll("(?i)\\s*(please|channel|payment|mode)\\s*$", "")
-                .strip();
-        if (cleaned.isEmpty()) return null;
-        return supportedChannels.stream()
-                .filter(c -> c.equalsIgnoreCase(cleaned))
-                .findFirst()
-                .orElse(null);
-    }
-
-    /**
      * Build a compact context for the intent classifier.
      * Includes registered users, current balance, last 3 transactions,
      * and the raw request — kept concise for the 3B model.
@@ -201,13 +144,18 @@ public class IntentClassifier {
             ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
             BENEFICIARY: person name or none
             AMOUNT: number or 0
-            CHANNEL: one of [%s] or UNKNOWN
+            CHANNEL: one of [%s]
             CONFIDENCE: HIGH or MEDIUM or LOW
 
             Rules:
             - CHANNEL must be EXACTLY one of: %s. Never invent channel names.
             - If the user explicitly names a channel (e.g. "via UPI", "through NEFT"), return that channel.
-            - If the user does NOT specify a channel, return CHANNEL: UNKNOWN.
+            - If the user does NOT specify a channel, select the best one based on the amount:
+              * Amount ≤ 500        → UPI Lite
+              * Amount ≤ 100000     → UPI
+              * Amount < 200000     → NEFT
+              * Amount ≥ 200000     → RTGS
+            - For non-transactional actions (QUERY_BALANCE, QUERY_TRANSACTIONS, QUERY_SEARCH, QUERY), use CHANNEL: UNKNOWN.
             - When a person's name appears in a query, use QUERY_SEARCH with BENEFICIARY set to that person.
             - Use QUERY_TRANSACTIONS for listing/filtering transactions without a specific person.
             - Use QUERY_BALANCE only for balance inquiries with no person mentioned.
@@ -216,15 +164,19 @@ public class IntentClassifier {
             - CONFIDENCE: LOW when the request is vague or unclear.
 
             Examples:
-            - "what is my balance" → ACTION: QUERY_BALANCE, CONFIDENCE: MEDIUM
-            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: MEDIUM
-            - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CONFIDENCE: MEDIUM
+            - "what is my balance" → ACTION: QUERY_BALANCE, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
             - "pay 5000 to Ramesh via UPI" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: MEDIUM
-            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "pay 5000 to Ramesh" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: MEDIUM
+            - "send 200 to Priya" → ACTION: TRANSFER, AMOUNT: 200, BENEFICIARY: Priya, CHANNEL: UPI Lite, CONFIDENCE: MEDIUM
+            - "transfer 150000 to Ramesh" → ACTION: TRANSFER, AMOUNT: 150000, BENEFICIARY: Ramesh, CHANNEL: NEFT, CONFIDENCE: MEDIUM
+            - "send 500000 to Priya" → ACTION: TRANSFER, AMOUNT: 500000, BENEFICIARY: Priya, CHANNEL: RTGS, CONFIDENCE: MEDIUM
+            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CHANNEL: UPI, CONFIDENCE: MEDIUM
             - "send money to Ramesh" → ACTION: TRANSFER, BENEFICIARY: Ramesh, AMOUNT: 0, CHANNEL: UNKNOWN, CONFIDENCE: LOW
             - "hello, how are you" → ACTION: QUERY, CONFIDENCE: HIGH
             - "what is PaSS" → ACTION: QUERY, CONFIDENCE: HIGH
-            - "transfer 2000 to Priya" → ACTION: TRANSFER, AMOUNT: 2000, BENEFICIARY: Priya, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
+            - "transfer 2000 to Priya" → ACTION: TRANSFER, AMOUNT: 2000, BENEFICIARY: Priya, CHANNEL: UPI, CONFIDENCE: MEDIUM
             """.formatted(channelList, channelList);
     }
 

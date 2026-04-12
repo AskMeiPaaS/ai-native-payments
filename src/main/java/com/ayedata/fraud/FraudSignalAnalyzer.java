@@ -158,13 +158,21 @@ public class FraudSignalAnalyzer {
     }
 
     public double computeRiskScore(double behavioralScore, List<String> fraudSignals) {
-        double baseScore = (behavioralScore > 0.0) ? behavioralScore : fraudConfig.getBaselineScore();
+        // Start from a low baseline — every transaction begins as likely safe
+        double risk = fraudConfig.getBaselineScore();
 
-        for (String signal : fraudSignals) {
-            baseScore *= fraudConfig.getMultiplierForSignal(signal);
+        // Behavioral anomaly is ONE scaled factor, not the entire base.
+        // Weight of 0.15 means even a fully anomalous user only adds 0.15 from behavior.
+        if (behavioralScore > 0.0) {
+            risk += (1.0 - behavioralScore) * fraudConfig.getBehavioralRiskWeight();
         }
 
-        return Math.max(0.0, Math.min(1.0, baseScore));
+        // Each signal adds a risk penalty
+        for (String signal : fraudSignals) {
+            risk += fraudConfig.getPenaltyForSignal(signal);
+        }
+
+        return Math.max(0.0, Math.min(1.0, risk));
     }
 
     public FraudAction determineFraudAction(double riskScore, List<String> fraudSignals) {
@@ -175,15 +183,15 @@ public class FraudSignalAnalyzer {
             }
         }
 
-        // Threshold-based decisions
-        if (riskScore >= fraudConfig.getThresholdApprove()) {
-            return FraudAction.APPROVE;
-        } else if (riskScore >= fraudConfig.getThresholdMonitor()) {
-            return FraudAction.MONITOR;
+        // Threshold-based decisions (high risk score = more dangerous)
+        if (riskScore >= fraudConfig.getThresholdBlock()) {
+            return FraudAction.BLOCK;
         } else if (riskScore >= fraudConfig.getThresholdEscalate()) {
             return FraudAction.ESCALATE;
+        } else if (riskScore >= fraudConfig.getThresholdMonitor()) {
+            return FraudAction.MONITOR;
         } else {
-            return FraudAction.BLOCK;
+            return FraudAction.APPROVE;
         }
     }
 }

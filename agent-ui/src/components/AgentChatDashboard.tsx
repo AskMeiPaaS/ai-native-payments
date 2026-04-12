@@ -20,7 +20,6 @@ interface Message {
   fraudScore?: number;   // Fraud risk score from fraud_analyzed stage
   fraudAction?: string;  // Fraud action: APPROVE, MONITOR, ESCALATE, BLOCK
   stageLines?: string[]; // Accumulated completed-stage summaries shown in progress bubble
-  channelOptions?: string[]; // Available channels when LLM asks user to pick
 }
 
 /** Canonical channel names the LLM or tool response may mention. */
@@ -485,7 +484,6 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   const toneLookup: Record<string, 'info' | 'success' | 'warn' | 'error'> = {
                     classifying: 'info',
                     classified: 'info',
-                    channel_required: 'warn',
                     fraud_analyzing: 'warn',
                     fraud_analyzed: (jsonData.blocked || jsonData.escalated) ? 'error' : 'success',
                     executing: 'warn',
@@ -538,9 +536,6 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                         doneLine += `\n📡 ${jsonData.channel} via RAG+LLM`;
                       }
                       break;
-                    case 'channel_required':
-                      doneLine = `📡 ${stageMsg}`;
-                      break;
                   }
 
                   setMessages((prev) =>
@@ -550,11 +545,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       const nextLines = doneLine ? [...lines, doneLine] : lines;
                       const activeLine = doneLine ? '' : `${stageIcon} ${stageMsg}`;
                       const content = [...nextLines, activeLine].filter(Boolean).join('\n');
-                      const extras: Partial<Message> = { content, stageLines: nextLines };
-                      if (stageName === 'channel_required' && jsonData.channels) {
-                        extras.channelOptions = jsonData.channels;
-                      }
-                      return { ...msg, ...extras };
+                      return { ...msg, content, stageLines: nextLines };
                     })
                   );
 
@@ -641,7 +632,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       if (jsonData.action) parts.push(jsonData.action);
                       if (jsonData.amount) parts.push(`₹${jsonData.amount}`);
                       if (jsonData.beneficiary) parts.push(`→ ${jsonData.beneficiary}`);
-                      if (jsonData.confidence) parts.push(`(${Math.round(jsonData.confidence * 100)}%)`);
+                      if (jsonData.confidence) parts.push(`(${jsonData.confidence})`);
                       upsert('classify', '🔍', 'Classification', parts.join(' ') || stageMsg, 'done');
                       if (jsonData.channel && jsonData.channel !== 'UNKNOWN') {
                         upsert('channel', '📡', 'Channel', `${jsonData.channel} via RAG+LLM`, 'done');
@@ -670,9 +661,6 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       break;
                     case 'formatting':
                       upsert('format', '✍️', 'Response', 'Generating response…', 'active');
-                      break;
-                    case 'channel_required':
-                      upsert('channel', '📡', 'Channel', 'Awaiting user selection…', 'active');
                       break;
                     case 'fallback':
                       upsert('fallback', '⚠️', 'Fallback', stageMsg, 'done');
@@ -728,7 +716,6 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       const inheritedChannel = waitMsg2?.stageChannel;
                       const inheritedFraudScore = waitMsg2?.fraudScore;
                       const inheritedFraudAction = waitMsg2?.fraudAction;
-                      const inheritedChannelOptions = waitMsg2?.channelOptions;
                       return [
                         ...prev.filter((m) => m.id !== waitMsgId),
                         {
@@ -738,7 +725,6 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           timestamp: new Date(),
                           ...(inheritedChannel ? { channel: inheritedChannel } : {}),
                           ...(inheritedFraudScore !== undefined ? { fraudScore: inheritedFraudScore, fraudAction: inheritedFraudAction } : {}),
-                          ...(inheritedChannelOptions?.length ? { channelOptions: inheritedChannelOptions } : {}),
                         },
                       ];
                     }
@@ -957,19 +943,6 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   >
                     <div className={`message-bubble message-bubble--${msg.role}`}>
                       <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'break-word', wordBreak: 'break-word' }}>{msg.content}</div>
-                      {msg.role === 'agent' && msg.channelOptions && msg.channelOptions.length > 0 && (
-                        <div className="channel-picker">
-                          {msg.channelOptions.map((ch) => (
-                            <button
-                              key={ch}
-                              className="channel-picker__btn"
-                              onClick={() => handleSendMessage(`via ${ch}`)}
-                            >
-                              📡 {ch}
-                            </button>
-                          ))}
-                        </div>
-                      )}
                       {msg.role === 'agent' && (msg.channel || msg.stageChannel || msg.fraudScore !== undefined || msg.meta) && (
                         <div className="bubble-footer">
                           {(msg.channel || msg.stageChannel) && (
@@ -981,7 +954,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           )}
                           {msg.fraudScore !== undefined && (
                             <div className="fraud-badge" data-action={msg.fraudAction?.toUpperCase()}>
-                              <span className="fraud-badge__icon">🛡️</span>
+                              <span className="fraud-badge__icon">Risk: 🛡️</span>
                               <span className="fraud-badge__label">
                                 {(msg.fraudScore * 100).toFixed(0)}%
                               </span>

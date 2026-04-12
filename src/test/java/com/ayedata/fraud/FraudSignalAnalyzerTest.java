@@ -40,16 +40,17 @@ class FraudSignalAnalyzerTest {
         lenient().when(embeddingModel.embed(anyString())).thenReturn(mockResponse);
 
         // Default config values matching application.properties defaults
-        lenient().when(fraudConfig.getHighValueThreshold()).thenReturn(5000.0);
-        lenient().when(fraudConfig.getBaselineScore()).thenReturn(0.95);
-        lenient().when(fraudConfig.getThresholdApprove()).thenReturn(0.90);
-        lenient().when(fraudConfig.getThresholdMonitor()).thenReturn(0.80);
-        lenient().when(fraudConfig.getThresholdEscalate()).thenReturn(0.65);
+        lenient().when(fraudConfig.getHighValueThreshold()).thenReturn(50000.0);
+        lenient().when(fraudConfig.getBaselineScore()).thenReturn(0.02);
+        lenient().when(fraudConfig.getBehavioralRiskWeight()).thenReturn(0.08);
+        lenient().when(fraudConfig.getThresholdBlock()).thenReturn(0.70);
+        lenient().when(fraudConfig.getThresholdEscalate()).thenReturn(0.50);
+        lenient().when(fraudConfig.getThresholdMonitor()).thenReturn(0.30);
         lenient().when(fraudConfig.getHardblockSignals()).thenReturn(Set.of("GEO_ANOMALY_DETECTED", "NEW_DEVICE_PATTERN"));
-        lenient().when(fraudConfig.getMultiplierForSignal("HIGH_VALUE_TRANSACTION")).thenReturn(0.8);
-        lenient().when(fraudConfig.getMultiplierForSignal("GEO_ANOMALY_DETECTED")).thenReturn(0.7);
-        lenient().when(fraudConfig.getMultiplierForSignal("NEW_DEVICE_PATTERN")).thenReturn(0.6);
-        lenient().when(fraudConfig.getMultiplierForSignal("UNUSUAL_TIMING")).thenReturn(0.9);
+        lenient().when(fraudConfig.getPenaltyForSignal("HIGH_VALUE_TRANSACTION")).thenReturn(0.02);
+        lenient().when(fraudConfig.getPenaltyForSignal("GEO_ANOMALY_DETECTED")).thenReturn(0.10);
+        lenient().when(fraudConfig.getPenaltyForSignal("NEW_DEVICE_PATTERN")).thenReturn(0.10);
+        lenient().when(fraudConfig.getPenaltyForSignal("UNUSUAL_TIMING")).thenReturn(0.03);
         lenient().when(fraudConfig.getBehavioralLookbackDays()).thenReturn(90);
         lenient().when(fraudConfig.getBehavioralMinTransactions()).thenReturn(3);
     }
@@ -106,43 +107,43 @@ class FraudSignalAnalyzerTest {
     // ── Risk score computation tests ──
 
     @Test
-    void computeRiskScore_withNoSignals_returns095Baseline() {
+    void computeRiskScore_withNoSignals_returns002Baseline() {
         double score = fraudSignalAnalyzer.computeRiskScore(0.0, java.util.List.of());
-        assertEquals(0.95, score, 0.001);
+        assertEquals(0.02, score, 0.001);
     }
 
     @Test
-    void computeRiskScore_withHighValueSignal_applies08Penalty() {
+    void computeRiskScore_withHighValueSignal_adds002Penalty() {
         double score = fraudSignalAnalyzer.computeRiskScore(0.0, java.util.List.of("HIGH_VALUE_TRANSACTION"));
-        assertEquals(0.76, score, 0.001); // 0.95 * 0.8
+        assertEquals(0.04, score, 0.001); // 0.02 + 0.02
     }
 
     @Test
-    void computeRiskScore_withRealBehavioralScore_usesIt() {
+    void computeRiskScore_withRealBehavioralScore_scalesBehavioralPenalty() {
         double score = fraudSignalAnalyzer.computeRiskScore(0.90, java.util.List.of());
-        assertEquals(0.90, score, 0.001);
+        assertEquals(0.028, score, 0.001); // 0.02 + (1.0 - 0.90) * 0.08 = 0.02 + 0.008
     }
 
     // ── Action determination tests ──
 
     @Test
-    void determineFraudAction_approve_whenRiskAbove090() {
-        assertEquals(FraudAction.APPROVE, fraudSignalAnalyzer.determineFraudAction(0.96, java.util.List.of()));
+    void determineFraudAction_approve_whenRiskBelow030() {
+        assertEquals(FraudAction.APPROVE, fraudSignalAnalyzer.determineFraudAction(0.20, java.util.List.of()));
     }
 
     @Test
-    void determineFraudAction_monitor_whenRiskBetween080And090() {
-        assertEquals(FraudAction.MONITOR, fraudSignalAnalyzer.determineFraudAction(0.85, java.util.List.of()));
+    void determineFraudAction_monitor_whenRiskBetween030And050() {
+        assertEquals(FraudAction.MONITOR, fraudSignalAnalyzer.determineFraudAction(0.35, java.util.List.of()));
     }
 
     @Test
-    void determineFraudAction_escalate_whenRiskBetween065And080() {
-        assertEquals(FraudAction.ESCALATE, fraudSignalAnalyzer.determineFraudAction(0.70, java.util.List.of()));
+    void determineFraudAction_escalate_whenRiskBetween050And070() {
+        assertEquals(FraudAction.ESCALATE, fraudSignalAnalyzer.determineFraudAction(0.55, java.util.List.of()));
     }
 
     @Test
-    void determineFraudAction_block_whenRiskBelow065() {
-        assertEquals(FraudAction.BLOCK, fraudSignalAnalyzer.determineFraudAction(0.50, java.util.List.of()));
+    void determineFraudAction_block_whenRiskAbove070() {
+        assertEquals(FraudAction.BLOCK, fraudSignalAnalyzer.determineFraudAction(0.75, java.util.List.of()));
     }
 
     @Test
@@ -161,7 +162,7 @@ class FraudSignalAnalyzerTest {
 
     @Test
     void analyzeFraudSignals_highValueAmount_triggersSignal() {
-        var signals = fraudSignalAnalyzer.analyzeFraudSignals("some context", "transfer 10000", 10000, "Bob", "UPI");
+        var signals = fraudSignalAnalyzer.analyzeFraudSignals("some context", "transfer 60000", 60000, "Bob", "UPI");
         assertTrue(signals.contains("HIGH_VALUE_TRANSACTION"));
     }
 

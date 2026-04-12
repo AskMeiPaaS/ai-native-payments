@@ -1,13 +1,13 @@
 package com.ayedata.fraud;
 
 /**
- * 🚨 Fraud Action Thresholds:
+ * 🚨 Fraud Action Thresholds (high risk score = more dangerous):
  * <pre>
  * Risk Score      Action      Description
- * ≥ 0.90         APPROVE     Autonomous execution
- * 0.80–0.89      MONITOR     Execute but alert compliance
- * 0.65–0.79      ESCALATE    Route to HITL operator (transaction frozen)
- * < 0.65         BLOCK       Transaction permanently stopped
+ * < 0.30         APPROVE     Autonomous execution (low risk)
+ * 0.30–0.49      MONITOR     Execute but alert compliance
+ * 0.50–0.69      ESCALATE    Route to HITL operator (transaction frozen)
+ * ≥ 0.70         BLOCK       Transaction permanently stopped (high risk)
  * Hardblock      BLOCK       Automatic rejection (geo-anomaly, new device)
  * </pre>
  */

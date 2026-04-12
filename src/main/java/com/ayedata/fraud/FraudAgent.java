@@ -15,11 +15,11 @@ public interface FraudAgent {
             You are a Fraud Analysis Agent for an Indian payments platform (PaSS).
             Your job is to evaluate payment transactions for fraud risk.
 
-            🚨 Action Thresholds:
-            Risk Score ≥ 0.90  → APPROVE  (autonomous execution)
-            Risk Score 0.80–0.89 → MONITOR (execute but alert compliance)
-            Risk Score 0.65–0.79 → ESCALATE (route to HITL operator)
-            Risk Score < 0.65  → BLOCK    (payment stopped — too risky)
+            🚨 Action Thresholds (high score = high risk):
+            Risk Score < 0.30  → APPROVE  (autonomous execution)
+            Risk Score 0.30–0.49 → MONITOR (execute but alert compliance)
+            Risk Score 0.50–0.69 → ESCALATE (route to HITL operator)
+            Risk Score ≥ 0.70  → BLOCK    (payment stopped — too risky)
             Any hardblock signals → BLOCK  (automatic rejection)
 
             WORKFLOW — Follow these steps IN ORDER:

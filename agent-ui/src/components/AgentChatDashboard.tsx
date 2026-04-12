@@ -20,6 +20,8 @@ interface Message {
   fraudScore?: number;   // Fraud risk score from fraud_analyzed stage
   fraudAction?: string;  // Fraud action: APPROVE, MONITOR, ESCALATE, BLOCK
   stageLines?: string[]; // Accumulated completed-stage summaries shown in progress bubble
+  channelOptions?: string[]; // Valid channels shown on CHANNEL_MISMATCH
+  originalIntent?: string;   // Original user message for channel re-submission
 }
 
 /** Canonical channel names the LLM or tool response may mention. */
@@ -536,7 +538,18 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                         doneLine += `\n📡 ${jsonData.channel} via RAG+LLM`;
                       }
                       break;
+                    case 'channel_mismatch':
+                      doneLine = `⚠️ Channel mismatch: ${jsonData.userChannel} is not valid for ₹${jsonData.amount}`;
+                      break;
                   }
+
+                  // On channel_mismatch, attach valid channels to the message for the picker UI
+                  const mismatchChannels: string[] | undefined =
+                    stageName === 'channel_mismatch' && Array.isArray(jsonData.validChannels)
+                      ? jsonData.validChannels
+                      : undefined;
+                  const mismatchOriginalIntent: string | undefined =
+                    stageName === 'channel_mismatch' ? jsonData.originalIntent : undefined;
 
                   setMessages((prev) =>
                     prev.map((msg) => {
@@ -545,7 +558,12 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                       const nextLines = doneLine ? [...lines, doneLine] : lines;
                       const activeLine = doneLine ? '' : `${stageIcon} ${stageMsg}`;
                       const content = [...nextLines, activeLine].filter(Boolean).join('\n');
-                      return { ...msg, content, stageLines: nextLines };
+                      return {
+                        ...msg,
+                        content,
+                        stageLines: nextLines,
+                        ...(mismatchChannels ? { channelOptions: mismatchChannels, originalIntent: mismatchOriginalIntent } : {}),
+                      };
                     })
                   );
 
@@ -964,6 +982,30 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           {msg.meta && (
                             <div className="message-meta">{msg.meta}</div>
                           )}
+                        </div>
+                      )}
+                      {msg.role === 'agent' && msg.channelOptions && msg.channelOptions.length > 0 && (
+                        <div className="channel-picker">
+                          <div className="channel-picker__label">Select a payment channel:</div>
+                          <div className="channel-picker__options">
+                            {msg.channelOptions.map((ch) => (
+                              <button
+                                key={ch}
+                                className="channel-picker__btn"
+                                onClick={() => {
+                                  const intent = msg.originalIntent || '';
+                                  handleSendMessage(`${intent} via ${ch}`);
+                                  setMessages((prev) =>
+                                    prev.map((m) =>
+                                      m.id === msg.id ? { ...m, channelOptions: undefined } : m
+                                    )
+                                  );
+                                }}
+                              >
+                                📡 {ch}
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       )}
                       {msg.role === 'agent' && msg.content && !msg.content.startsWith('⏳') && !msg.content.startsWith('🔍') && !msg.content.startsWith('⚡') && !msg.content.startsWith('✍️') && !msg.content.startsWith('🛡️') && !msg.content.startsWith('📡') && (

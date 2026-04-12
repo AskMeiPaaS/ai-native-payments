@@ -107,7 +107,7 @@ public class PaSSOrchestratorAgent {
                If the user specified a channel, pass it. Otherwise omit it (auto-selects).
             2. For receive/add/deposit/top-up/credit requests with an amount → ALWAYS call receiveFunds immediately.
             3. For mandate/routing switches without money → call switchMandate.
-            4. On CHANNEL_MISMATCH response → re-call the tool with the suggested channel automatically. Do NOT ask the user.
+            4. On CHANNEL_MISMATCH response → inform the user which channels are valid for the amount and ask them to choose. Do NOT re-call the tool automatically.
             5. Never claim a transfer succeeded unless the tool returned SUCCESS.
             6. If a tool returns TRANSFER_BLOCKED or RECEIVE_BLOCKED, relay the message to the user.
 
@@ -281,6 +281,22 @@ public class PaSSOrchestratorAgent {
                 log.info("Session {}: Channel not specified — tools will auto-select based on amount", sessionId);
             }
 
+            // Channel mismatch check (user explicitly chose an incompatible channel)
+            if (intent.isTransactional()
+                    && intent.channel() != null
+                    && !"UNKNOWN".equalsIgnoreCase(intent.channel())) {
+                String mismatch = ledgerTools.validateChannelForAmount(intent.channel(), intent.amount());
+                if (mismatch != null) {
+                    log.info("Session {}: Channel mismatch detected: {} for ₹{}", sessionId, intent.channel(), intent.amount());
+                    java.util.List<String> validChannels = LedgerTools.validChannelsForAmount(intent.amount());
+                    String channelList = String.join(", ", validChannels);
+                    return String.format(
+                            "The channel you selected (%s) is not compatible with ₹%.2f. "
+                            + "Valid channels for this amount: %s. Please select a channel to proceed.",
+                            intent.channel(), intent.amount(), channelList);
+                }
+            }
+
             // Step 2: Fraud detection (transactional intents only)
             if (intent.isTransactional()) {
                 log.info("Session {}: Step 2 — fraud analysis (amount=₹{} beneficiary={} channel={})",
@@ -420,6 +436,31 @@ public class PaSSOrchestratorAgent {
                     "step", 1, "totalSteps", 1));
             String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
             return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
+        }
+
+        // ── Channel mismatch check (user explicitly chose an incompatible channel) ──
+        if (intent.isTransactional()
+                && intent.channel() != null
+                && !"UNKNOWN".equalsIgnoreCase(intent.channel())) {
+            String mismatch = ledgerTools.validateChannelForAmount(intent.channel(), intent.amount());
+            if (mismatch != null) {
+                log.info("Session {}: Channel mismatch detected: {} for ₹{}", sessionId, intent.channel(), intent.amount());
+                java.util.List<String> validChannels = LedgerTools.validChannelsForAmount(intent.amount());
+                Map<String, Object> mismatchData = new java.util.LinkedHashMap<>();
+                mismatchData.put("message", mismatch);
+                mismatchData.put("userChannel", intent.channel());
+                mismatchData.put("amount", intent.amount());
+                mismatchData.put("beneficiary", intent.beneficiary());
+                mismatchData.put("action", intent.action());
+                mismatchData.put("validChannels", validChannels);
+                mismatchData.put("originalIntent", userIntent);
+                stageCallback.accept("channel_mismatch", mismatchData);
+                String channelList = String.join(", ", validChannels);
+                return new SyntheticTokenStream(String.format(
+                        "The channel you selected (%s) is not compatible with ₹%.2f. "
+                        + "Valid channels for this amount: %s. Please select a channel below to proceed.",
+                        intent.channel(), intent.amount(), channelList));
+            }
         }
 
         // ── Step 2: Fraud detection (transactional intents only) ──

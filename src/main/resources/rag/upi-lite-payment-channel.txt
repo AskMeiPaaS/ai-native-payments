@@ -1,5 +1,7 @@
 UPI Lite — Indian Payment Channel Risk & Routing Guide
 
+⚠️ HARD LIMIT: UPI Lite is ONLY for amounts ≤ ₹500. Any amount above ₹500 MUST NOT use UPI Lite — use UPI, NEFT, or RTGS instead. This rule has no exceptions.
+
 Overview:
 UPI Lite is a lightweight, on-device wallet feature built on top of the Unified Payments Interface (UPI) ecosystem, introduced by NPCI and RBI in September 2022. It is optimised for high-volume, low-value (micro) payments where speed and offline-readiness are paramount. Funds are pre-loaded from the user's linked bank account into an on-device UPI Lite wallet; debit transactions happen locally without a bank server round-trip, making payments significantly faster and more resilient to network fluctuations. No UPI PIN is required for UPI Lite transactions, reducing friction to near-zero.
 
@@ -50,6 +52,7 @@ Use Cases (Best-Fit Scenarios):
 
 When to Auto-Select UPI Lite (System Rule):
 If a transfer or receive request does NOT specify a payment channel AND the amount is ≤ ₹500, UPI Lite MUST be selected automatically. No user confirmation or PIN prompt should be shown. This is the primary routing rule for micro-payments in the PaSS platform.
+CRITICAL: If the amount is ABOVE ₹500, do NOT select UPI Lite under any circumstances. Use UPI (up to ₹1,00,000), NEFT (up to ₹2,00,000), or RTGS (₹2,00,000 and above) instead.
 
 Risk Profile:
 LOW RISK (₹0 – ₹500 — entire UPI Lite range):

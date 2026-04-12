@@ -145,7 +145,7 @@ public class LedgerTools {
     @Tool("""
             Transfer money to a beneficiary (name, UPI ID, or account number). \
             Channel is optional — auto-selects optimal channel for the amount. \
-            On CHANNEL_MISMATCH: re-call with suggested channel, don't ask user. \
+            On CHANNEL_MISMATCH: inform the user which channels are valid and ask them to choose. Do NOT re-call automatically. \
             Rejects overdrafts.\
             """)
     public String transferFunds(@ToolMemoryId String memoryId,
@@ -242,7 +242,7 @@ public class LedgerTools {
     @Tool("""
             Credit (add) money into the user's account for receive/deposit/top-up requests. \
             Channel is optional — auto-selects optimal channel for the amount. \
-            On CHANNEL_MISMATCH: re-call with suggested channel, don't ask user. \
+            On CHANNEL_MISMATCH: inform the user which channels are valid and ask them to choose. Do NOT re-call automatically. \
             Not for outbound transfers — use transferFunds instead.\
             """)
     public String receiveFunds(@ToolMemoryId String memoryId,
@@ -311,12 +311,25 @@ public class LedgerTools {
     }
 
     /**
+     * Return the list of valid payment channels for a given amount based on RBI rules.
+     * Used by the orchestrator to present channel options on mismatch.
+     */
+    public static java.util.List<String> validChannelsForAmount(double amount) {
+        java.util.List<String> channels = new java.util.ArrayList<>();
+        if (amount <= 500) channels.add("UPI Lite");
+        if (amount <= 1_00_000) channels.add("UPI");
+        channels.add("NEFT"); // NEFT has no hard limit
+        if (amount >= 2_00_000) channels.add("RTGS");
+        return channels;
+    }
+
+    /**
      * Validate that the user-specified channel is legal for the given amount.
      * Returns null when the channel+amount combination is valid.
      * Returns a CHANNEL_MISMATCH string (consumed by the LLM) when correction is needed;
      * the message always names the corrected channel so the LLM can re-invoke automatically.
      */
-    private String validateChannelForAmount(String channel, double amount) {
+    public String validateChannelForAmount(String channel, double amount) {
         String norm = channel.trim().toLowerCase();
 
         // UPI Lite — hard cap ₹500

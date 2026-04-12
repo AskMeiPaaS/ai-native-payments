@@ -22,7 +22,7 @@ Availability: 24x7x365 including bank holidays
 Risk Profile by Transaction Tier:
 LOW RISK (₹0 – ₹10,000):
 - Suitable for all risk profiles and new users
-- UPI Lite eligible for transactions under ₹500 (no PIN, fastest)
+- UPI Lite eligible ONLY for transactions ≤ ₹500 (no PIN, fastest). Amounts above ₹500 MUST use standard UPI, not UPI Lite.
 - Minimal fraud monitoring required
 - Auto-approve for trusted partners with score ≥ 0.80
 

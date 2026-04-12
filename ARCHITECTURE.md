@@ -31,7 +31,7 @@ The backend follows a responsibility-first package structure to keep the applica
 
 | Package | Module Responsibility |
 |---------|-----------------------|
-| `com.ayedata.ai` | Supervisor agent, streaming orchestration, tools, context enrichment |
+| `com.ayedata.ai` | Supervisor agent, streaming orchestration, intent classification, tools, context enrichment |
 | `com.ayedata.audit` | Long-term session audit trail, API capture, exception auditing, indexes |
 | `com.ayedata.config` | Mongo, Ollama, Voyage AI, HTTP client, and application wiring |
 | `com.ayedata.controller` | Shared sync/streaming APIs that are not feature-specific |
@@ -39,9 +39,9 @@ The backend follows a responsibility-first package structure to keep the applica
 | `com.ayedata.exception` | Global exception handlers |
 | `com.ayedata.fraud` | Dedicated fraud detection agent — LangChain4j AiServices proxy, @Tool methods, signal analysis, risk scoring, externalized config (`FraudConfig`), behavioral profiling |
 | `com.ayedata.hitl` | User appeals, operator workflows, escalation models, HITL database init |
-| `com.ayedata.init` | Cross-cutting bootstrap logic and infrastructure initialization |
+| `com.ayedata.init` | Cross-cutting bootstrap logic, infrastructure initialization, user and merchant registries |
 | `com.ayedata.payment` | Payment channel routing and switch implementations |
-| `com.ayedata.rag` | Knowledge seeding, retrieval, reranking, and vector-backed context services |
+| `com.ayedata.rag` | Knowledge seeding, retrieval, reranking, and vector-backed context services (8 RAG documents) |
 | `com.ayedata.service` | Shared memory and ledger coordination services |
 
 This keeps compliance, AI orchestration, and runtime concerns separated without changing the public API surface.
@@ -168,8 +168,12 @@ The pipeline dynamically adjusts its stage count based on intent type:
 
 `totalSteps` is computed dynamically after classification. SSE stage events keep the frontend in sync.
 
-**Stage 1 — Classify** (LLM call)
-- LLM extracts 4 fields: `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL`
+**Stage 1 — Classify** (IntentClassifier — direct LLM call)
+- `IntentClassifier` builds a compact context including the **user registry** and **merchant directory** (10 merchants: Chai Point, Reliance Fresh, Apollo Pharmacy, BookMyShow, Indian Oil, Flipkart, Ola Cabs, Tata Power, Decathlon Sports, MakeMyTrip)
+- BENEFICIARY matching: merchants are matched first, then users — so "Apollo" resolves to "Apollo Pharmacy", not the closest user name
+- LLM extracts 5 fields: `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL`, `CONFIDENCE`
+- If the user does NOT explicitly mention a channel, `CHANNEL` = `UNKNOWN`
+- When `CHANNEL` is `UNKNOWN` for a transactional intent, the orchestrator returns a **channel picker** (SSE `channel_mismatch` event with `validChannels` list) instead of proceeding — the user selects the channel
 - SSE events: `classifying` → `classified`
 
 **Stage 2 — Fraud Detection** (LangChain4j Fraud Agent — transactional only)
@@ -177,7 +181,7 @@ The pipeline dynamically adjusts its stage count based on intent type:
 - `FraudSignalAnalyzer` performs RAG retrieval + behavioral scoring + signal detection + composite risk scoring
 - All parameters externalized via `FraudConfig` (`@Configuration`) — thresholds, multipliers, hardblock signals, and behavioral lookback window are tunable via `.env` without code changes
 - **Behavioral scoring**: queries last N days (default 90) of user’s completed transactions, computes amount consistency (60%) + frequency regularity (40%) as a 0.0–1.0 composite score
-- Action thresholds: ≥0.95 APPROVE, 0.80–0.95 MONITOR, <0.80 ESCALATE, hardblock signals BLOCK (all configurable)
+- Action thresholds: <0.30 APPROVE, 0.30–0.49 MONITOR, 0.50–0.69 ESCALATE, ≥0.70 BLOCK, hardblock signals BLOCK (all configurable)
 - BLOCK short-circuits the pipeline (Stages 3–4 skipped)
 - Fraud result cached per session to avoid double analysis in downstream tools
 - SSE events: `fraud_analyzing` → `fraud_analyzed`
@@ -212,7 +216,10 @@ Routed when `intent.isTransactional() && intent.amount() > 0`:
 ```
 orchestrateSwitchStreaming
   └─ Stage 1: classifyIntent(userIntent)
-       └─ LLM → ACTION, BENEFICIARY, AMOUNT, CHANNEL
+       └─ IntentClassifier → ACTION, BENEFICIARY, AMOUNT, CHANNEL, CONFIDENCE
+       └─ Context includes user registry + merchant directory (10 merchants)
+       └─ BENEFICIARY matched against merchants first, then users
+       └─ CHANNEL = UNKNOWN if user didn't name one → channel picker shown
   └─ Stage 2: fraudAgentOrchestrator.analyze(userId, userIntent, ...)
        └─ FraudAgent (LangChain4j) → FraudAnalysisResult
        └─ BLOCK → short-circuit with rejection message
@@ -255,7 +262,7 @@ orchestrateSwitch / orchestrateSwitchStreaming
 
 When intent is neither transactional nor a query tool, the request falls through to the `Supervisor` / `StreamingSupervisor` AiServices proxy which retains full LangChain4j tool-calling capability as a safety net.
 
-**Key Design Constraint:** The LLM (Stage 1) produces only four fields — `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL`. All MongoDB filter logic is handled by the programmatic `buildQueryFilter()` method, ensuring the classifier is never a bottleneck for query accuracy.
+**Key Design Constraint:** The `IntentClassifier` (Stage 1) produces five fields — `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL`, `CONFIDENCE`. Its context includes both the **user registry** and **merchant directory** so the LLM can resolve ambiguous names (e.g., "Apollo" → "Apollo Pharmacy"). All MongoDB filter logic is handled by the programmatic `buildQueryFilter()` method, ensuring the classifier is never a bottleneck for query accuracy.
 
 ---
 
@@ -675,9 +682,10 @@ All fraud parameters are externalized via `FraudConfig` and can be tuned via env
 |-----------|-------------|--------|
 | High-value threshold | `FRAUD_HIGH_VALUE_THRESHOLD` | ₹5,000 |
 | Signal multipliers | `FRAUD_MULT_HIGH_VALUE`, `_GEO_ANOMALY`, `_NEW_DEVICE`, `_UNUSUAL_TIMING` | 0.8, 0.7, 0.6, 0.9 |
-| Approve threshold | `FRAUD_THRESHOLD_APPROVE` | 0.95 |
-| Monitor threshold | `FRAUD_THRESHOLD_MONITOR` | 0.80 |
-| Baseline score | `FRAUD_BASELINE_SCORE` | 0.95 |
+| Monitor threshold | `FRAUD_THRESHOLD_MONITOR` | 0.30 |
+| Escalate threshold | `FRAUD_THRESHOLD_ESCALATE` | 0.50 |
+| Block threshold | `FRAUD_THRESHOLD_BLOCK` | 0.70 |
+| Baseline score | `FRAUD_BASELINE_SCORE` | 0.02 |
 | Hardblock signals | `FRAUD_HARDBLOCK_SIGNALS` | `GEO_ANOMALY_DETECTED,NEW_DEVICE_PATTERN` |
 | Behavioral lookback | `FRAUD_BEHAVIORAL_LOOKBACK_DAYS` | 90 days |
 | Min transactions | `FRAUD_BEHAVIORAL_MIN_TRANSACTIONS` | 3 |
@@ -1767,19 +1775,20 @@ public class FraudAgentOrchestrator {
 | NEW_DEVICE_PATTERN | 0.9 | Unrecognized device fingerprint |
 | UNUSUAL_TIMING | 0.85 | Outside normal activity hours |
 
-**Composite Score Formula:**
+**Composite Score Formula (Risk-Based — Higher = Riskier):**
 ```
-riskScore = behavioralScore × signalPenalties
+riskScore = baselineScore + (1.0 - behavioralScore) * behavioralRiskWeight + signalPenalties
 ```
 
-#### Action Thresholds
+#### Action Thresholds (Risk-Based)
 
 | Risk Score Range | Action | Behavior |
 |------------------|--------|----------|
-| ≥ 0.95 | APPROVE | Proceed with transaction |
-| 0.80 - 0.95 | MONITOR | Log and proceed, flag for review |
-| < 0.80 | ESCALATE | Route to HITL for human approval |
-| Critical signals | BLOCK | Immediate rejection |
+| < 0.30 | APPROVE | Proceed with transaction |
+| 0.30 – 0.49 | MONITOR | Log and proceed, flag for review |
+| 0.50 – 0.69 | ESCALATE | Route to HITL for human approval |
+| ≥ 0.70 | BLOCK | Immediate rejection |
+| Hardblock signals | BLOCK | Immediate rejection (regardless of score) |
 
 #### Integration with Orchestration Pipeline
 
@@ -1938,20 +1947,23 @@ app.http.request.timeout.seconds=30
 
 ## 13. Testing & Quality
 
-### Unit Tests (33 tests - all passing)
+### Unit Tests (46 tests - all passing)
 
-- MongoLedgerServiceTest (11 tests)
-- HitlEscalationServiceTest (5 tests)
-- FraudSignalAnalyzerTest (17 tests)
+- MongoLedgerServiceTest (12 tests)
+- HitlEscalationServiceTest (7 tests)
+- FraudSignalAnalyzerTest (23 tests)
+- AccountBalanceServiceTest (3 tests)
+- QueryableEncryptionIntegrationTest (1 test, skipped — requires live MongoDB)
 
 ### Test Categories
 
 | Category | Tests | Focus |
 |----------|-------|-------|
 | Input Validation | 8 | null/blank handling, format validation |
-| Business Logic | 10 | ACID transaction simulation, escalation logic |
+| Business Logic | 15 | ACID transaction simulation, fraud scoring, escalation logic |
+| Fraud Detection | 23 | Risk scoring, behavioral analysis, signal detection, threshold validation |
 | Integration | 6 | Service collaboration, mocking |
-| HITL | 5 | Escalation freezing, audit logging, edge cases |
+| HITL | 7 | Escalation freezing, audit logging, edge cases |
 
 ### HITL-Specific Test Coverage (HitlEscalationServiceTest)
 
@@ -2049,7 +2061,7 @@ curl -X POST http://localhost:8080/api/v1/operator/escalations/{escalation_id}/a
 - All Lombok annotations migrated to manual fields for Java 21 compatibility
 - Jackson for type-safe JSON handling
 - SLF4J logging throughout
-- HITL component tests: 5/5 passing ✅
+- All 46 tests passing (1 skipped — QE integration test requires live MongoDB) ✅
 
 ---
 

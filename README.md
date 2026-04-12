@@ -4,6 +4,8 @@
 
 > **License:** MIT — see [LICENSE](LICENSE)
 
+![PaSS Agent Demo](images/demo.png)
+
 ---
 
 ## ⚠️ Security Disclaimer
@@ -26,9 +28,10 @@ Traditional payment apps wrap AI around a fixed rule engine. Here the inverse is
 | Concern | How It Works |
 |---------|-------------|
 | **Payment routing** | LLM reads RAG-retrieved RBI channel rules and decides. No Java `if/else`. |
-| **Channel selection** | Only channels found in the retrieved knowledge chunks are offered to the LLM (`[APPROVED CHANNELS]`). |
-| **Channel validation** | `LedgerTools.validateChannelForAmount()` cross-checks the LLM's chosen channel against RBI amount rules at tool-call time. On mismatch it returns a `CHANNEL_MISMATCH:` sentinel with the correct channel so the LLM automatically re-invokes with the corrected value. |
-| **Fraud detection** | Dedicated `FraudAgentOrchestrator` (LangChain4j agent with its own `@Tool` methods) runs as **Stage 2** of the pipeline — retrieves fraud patterns via RAG, scores behavioral telemetry, and determines APPROVE/MONITOR/ESCALATE/BLOCK before any balance changes. |
+| **Intent classification** | A dedicated `IntentClassifier` extracts ACTION, BENEFICIARY, AMOUNT, CHANNEL from natural language — context includes both the **user registry** and **merchant directory** (10 merchants) so the LLM resolves "Apollo" → "Apollo Pharmacy", not the nearest user name. |
+| **Channel selection** | If the user names a channel explicitly, it is used. If not, the classifier returns `UNKNOWN` and the UI presents a **channel picker** with amount-valid options — the user always has the final say. |
+| **Channel validation** | `LedgerTools.validateChannelForAmount()` cross-checks the LLM's chosen channel against RBI amount rules at tool-call time. On mismatch the frontend shows a channel picker with corrected alternatives. |
+| **Fraud detection** | Dedicated `FraudAgentOrchestrator` (LangChain4j agent with its own `@Tool` methods) runs as **Stage 2** of the pipeline — retrieves fraud patterns via RAG, scores behavioral telemetry with a risk-based model (baseline 0.02, higher = riskier), and determines APPROVE/MONITOR/ESCALATE/BLOCK before any balance changes. |
 | **Ledger execution** | `@Tool`-annotated Java methods expose ACID-safe operations the LLM can call by name. All three tools (`transferFunds`, `receiveFunds`, `switchMandate`) commit to MongoDB via `MongoLedgerService`. |
 | **Memory** | Temporal turns are vector-embedded and recalled per session. RAG knowledge is reranked per query. |
 | **Human oversight** | Any decision can be appealed; operators approve / deny / override via the HITL dashboard. |
@@ -65,9 +68,10 @@ All fraud detection parameters are externalized via `FraudConfig` and can be tun
 | `FRAUD_MULT_GEO_ANOMALY` | 0.7 | Risk multiplier for geo-anomaly signals |
 | `FRAUD_MULT_NEW_DEVICE` | 0.6 | Risk multiplier for new device patterns |
 | `FRAUD_MULT_UNUSUAL_TIMING` | 0.9 | Risk multiplier for unusual timing |
-| `FRAUD_THRESHOLD_APPROVE` | 0.95 | Score at or above → APPROVE |
-| `FRAUD_THRESHOLD_MONITOR` | 0.80 | Score at or above → MONITOR |
-| `FRAUD_BASELINE_SCORE` | 0.95 | Default baseline when no behavioral data |
+| `FRAUD_THRESHOLD_MONITOR` | 0.30 | Risk score at or above → MONITOR |
+| `FRAUD_THRESHOLD_ESCALATE` | 0.50 | Risk score at or above → ESCALATE |
+| `FRAUD_THRESHOLD_BLOCK` | 0.70 | Risk score at or above → BLOCK |
+| `FRAUD_BASELINE_SCORE` | 0.02 | Default baseline risk score when no behavioral data |
 | `FRAUD_HARDBLOCK_SIGNALS` | `GEO_ANOMALY_DETECTED,NEW_DEVICE_PATTERN` | Signals that trigger automatic BLOCK |
 | `FRAUD_BEHAVIORAL_LOOKBACK_DAYS` | 90 | Days of transaction history for behavioral scoring |
 | `FRAUD_BEHAVIORAL_MIN_TRANSACTIONS` | 3 | Minimum transactions needed to compute behavioral score |
@@ -80,14 +84,15 @@ All fraud detection parameters are externalized via `FraudConfig` and can be tun
 - **Frequency consistency (40%)** — transactions per week; more regular activity = higher score
 - Returns `0.0` if fewer than `FRAUD_BEHAVIORAL_MIN_TRANSACTIONS` historical transactions (triggers baseline fallback in risk scoring)
 
-### Action Thresholds
+### Action Thresholds (Risk-Based — Higher = Riskier)
 
 | Risk Score | Action | Outcome |
-|------------|--------|---------|
-| ≥ 0.95 | **APPROVE** | Proceed with transaction |
-| 0.80 – 0.95 | **MONITOR** | Log and proceed, flag for review |
-| < 0.80 | **ESCALATE** | Route to HITL for human approval |
-| Critical signals | **BLOCK** | Immediate rejection |
+|------------|--------|--------|
+| < 0.30 | **APPROVE** | Proceed with transaction |
+| 0.30 – 0.49 | **MONITOR** | Log and proceed, flag for review |
+| 0.50 – 0.69 | **ESCALATE** | Route to HITL for human approval |
+| ≥ 0.70 | **BLOCK** | Immediate rejection |
+| Hardblock signals | **BLOCK** | Immediate rejection (regardless of score) |
 
 ### Transaction Flow with Fraud Checks
 
@@ -126,6 +131,7 @@ ai-native-payments/
 │   │   ├── agent/
 │   │   │   ├── ContextEnricher.java          # RAG + temporal recall → enriched prompt
 │   │   │   ├── DeterministicToolExecutor.java # Programmatic tool dispatch (Stage 3)
+│   │   │   ├── IntentClassifier.java         # Step 1 classifier — extracts ACTION, BENEFICIARY, AMOUNT, CHANNEL
 │   │   │   └── PaSSOrchestratorAgent.java    # Multi-stage orchestrator (Classify → Fraud → Execute → Format)
 │   │   └── tools/
 │   │       └── LedgerTools.java              # @Tool methods: transferFunds, receiveFunds, switchMandate
@@ -173,7 +179,9 @@ ai-native-payments/
 │   │   ├── DatabaseConnectionValidator.java
 │   │   ├── DatabaseInitializer.java
 │   │   ├── EncryptionKeyInitializer.java
+│   │   ├── MerchantDirectoryInitializer.java # Loads 10 merchants from demo-merchants.json
 │   │   ├── MemoryDatabaseInitializer.java
+│   │   ├── UserProfileInitializer.java       # Loads demo users from demo-users.json
 │   │   └── VectorSearchIndexInitializer.java
 │   │
 │   ├── payment/                              # Payment channel routing
@@ -184,7 +192,7 @@ ai-native-payments/
 │   │   └── channels/                         # Channel implementations
 │   │
 │   ├── rag/                                  # Knowledge retrieval
-│   │   ├── init/RagKnowledgeSeeder.java      # Seeds 7 RBI channel docs on startup
+│   │   ├── init/RagKnowledgeSeeder.java      # Seeds 8 RBI channel + merchant docs on startup
 │   │   └── service/RagService.java           # embed → Atlas $vectorSearch → rerank
 │   │
 │   ├── fraud/                                # Fraud detection agent (Stage 2)
@@ -207,13 +215,14 @@ ai-native-payments/
 │   ├── encryption-schemas/                  # MongoDB Queryable Encryption field maps
 │   │   ├── transactions.json
 │   │   └── user_profiles.json
-│   └── rag/                                 # RBI payment channel knowledge base
-│       ├── cash-payment-channel.txt
+│   └── rag/                                 # RBI payment channel knowledge base (8 docs)
 │       ├── cheque-payment-channel.txt
 │       ├── indian-payment-regulatory-framework.txt
+│       ├── merchant-directory-guide.txt
 │       ├── neft-payment-channel.txt
 │       ├── payment-routing-risk-matrix.txt
 │       ├── rtgs-payment-channel.txt
+│       ├── upi-lite-payment-channel.txt
 │       └── upi-payment-channel.txt
 │
 ├── agent-ui/                                # Next.js frontend
@@ -224,7 +233,7 @@ ai-native-payments/
 │       │       ├── agent/orchestrate-stream/route.ts   # SSE proxy (no buffering)
 │       │       └── [...path]/route.ts                  # Generic reverse proxy
 │       └── components/
-│           ├── AgentChatDashboard.tsx        # Streaming chat + channel badge + token metrics
+│           ├── AgentChatDashboard.tsx        # Streaming chat + channel picker + badge ("User Selected" / "via RAG+LLM") + token metrics
 │           ├── UserBalanceDashboard.tsx      # Account summary, masked PII + click-to-reveal
 │           ├── HitlAppealButton.tsx          # User appeal modal
 │           ├── HitlOperatorDashboard.tsx     # Operator escalation panel
@@ -259,17 +268,27 @@ PaSSController  (virtual thread)
 PaSSOrchestratorAgent.orchestrateSwitchStreaming()
   ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  Stage 1 — CLASSIFY (LLM call)                                   │
+│  Stage 1 — CLASSIFY (IntentClassifier — direct LLM call)         │
 │  SSE: classifying → classified                                   │
+│  Context: user registry + merchant directory (10 merchants)       │
 │  LLM extracts: ACTION, BENEFICIARY, AMOUNT, CHANNEL              │
+│  ├─ BENEFICIARY: matched against merchants first, then users      │
+│  └─ CHANNEL: UNKNOWN if user didn't name one explicitly           │
 └──────────────────────┬───────────────────────────────────────────┘
+                       │
+                   ┌───▼──────────────────────────────────────┐
+                   │  CHANNEL = UNKNOWN?                       │
+                   │  → Show channel picker (SSE: channel_     │
+                   │    mismatch with validChannels list)       │
+                   │  → User selects → re-submit with channel  │
+                   └───┬──────────────────────────────────────┘
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  Stage 2 — FRAUD DETECTION (LangChain4j Fraud Agent)             │
 │  SSE: fraud_analyzing → fraud_analyzed                           │
 │  FraudAgentOrchestrator.analyze()                                │
 │  ├─ FraudSignalAnalyzer: RAG retrieval + signal detection        │
-│  ├─ FraudAgent: LLM with @Tool methods scores risk               │
+│  ├─ Risk-based scoring (baseline 0.02, higher = riskier)         │
 │  ├─ Action: APPROVE / MONITOR / ESCALATE / BLOCK                 │
 │  └─ BLOCK → short-circuit (skip Stages 3-4)                      │
 └──────────────────────┬───────────────────────────────────────────┘
@@ -292,7 +311,7 @@ onCompleteResponse
   └─ TemporalMemoryService.archiveTurn()  (async virtual thread)
 ```
 
-> **Non-transactional flows** (queries, general questions) skip Stage 2 (fraud) and run 3 or 2 stages. `totalSteps` is computed dynamically after classification.
+> **Non-transactional flows** (queries, general questions) skip Stage 2 (fraud) and run 3 or 2 stages. `totalSteps` is computed dynamically after classification. When the classifier returns `CHANNEL: UNKNOWN` for a transactional intent, the pipeline pauses and presents a **channel picker** to the user with amount-valid options.
 
 ### 2. RAG-constrained channel selection
 
@@ -547,7 +566,7 @@ curl -s -X POST http://localhost:8080/api/v1/agent/orchestrate \
 | **PII protection** | Dashboard serves `email`/`phone` masked by default (`ar•••@domain.com`, `+91••••••3210`); plaintext decoded server-side via `GET /reveal-pii` on explicit user request, with `[PII-REVEAL]` audit log entry |
 | **Privacy** | PII sanitised before reaching the LLM; MongoDB Queryable Encryption on sensitive fields |
 | **Fairness** | Routing is driven by RBI-published channel rules (RAG), not proprietary scoring |
-| **Transparency** | Channel badge in UI shows which payment rail the LLM chose and why (via RAG+LLM label) |
+| **Transparency** | Channel badge in UI shows which payment rail was chosen — **"User Selected"** when picked from the channel picker, or **"via RAG+LLM"** when the AI selected it |
 
 ---
 

@@ -125,9 +125,10 @@ All fraud parameters are externalized via `FraudConfig` — tunable via `.env` w
 |-----------|-------------|--------|
 | High-value threshold | `FRAUD_HIGH_VALUE_THRESHOLD` | ₹5,000 |
 | Signal multipliers | `FRAUD_MULT_HIGH_VALUE` / `GEO_ANOMALY` / `NEW_DEVICE` / `UNUSUAL_TIMING` | 0.8 / 0.7 / 0.6 / 0.9 |
-| Approve threshold | `FRAUD_THRESHOLD_APPROVE` | 0.95 |
-| Monitor threshold | `FRAUD_THRESHOLD_MONITOR` | 0.80 |
-| Baseline score | `FRAUD_BASELINE_SCORE` | 0.95 |
+| Monitor threshold | `FRAUD_THRESHOLD_MONITOR` | 0.30 |
+| Escalate threshold | `FRAUD_THRESHOLD_ESCALATE` | 0.50 |
+| Block threshold | `FRAUD_THRESHOLD_BLOCK` | 0.70 |
+| Baseline score | `FRAUD_BASELINE_SCORE` | 0.02 |
 | Hardblock signals | `FRAUD_HARDBLOCK_SIGNALS` | `GEO_ANOMALY_DETECTED,NEW_DEVICE_PATTERN` |
 | Behavioral lookback | `FRAUD_BEHAVIORAL_LOOKBACK_DAYS` | 90 days |
 | Min transactions | `FRAUD_BEHAVIORAL_MIN_TRANSACTIONS` | 3 |
@@ -145,7 +146,7 @@ All fraud parameters are externalized via `FraudConfig` — tunable via `.env` w
 
 Fraud analysis is the explicit **Stage 2** in the orchestration pipeline:
 
-1. **Stage 1 — Classify**: LLM extracts intent (stateless)
+1. **Stage 1 — Classify**: `IntentClassifier` extracts intent with user + merchant context (stateless). Returns `CHANNEL: UNKNOWN` if user didn't specify → **channel picker** shown
 2. **Stage 2 — Fraud Detection**: `FraudAgentOrchestrator` runs dedicated Fraud Agent → SSE events `fraud_analyzing` / `fraud_analyzed`
 3. **Stage 3 — Execute**: If not blocked, `@Tool` method executes ACID transaction
 4. **Stage 4 — Format**: LLM formats result as natural language
@@ -215,8 +216,8 @@ The LLM in this platform is not a single monolithic chatbot. It plays **five dis
 | Property | Value |
 |----------|-------|
 | **Purpose** | Extract structured intent from natural language |
-| **Input** | User message + compact context (balance, recent txns) |
-| **Output** | 4 fields: `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL` |
+| **Input** | User message + compact context (balance, recent txns, **user registry**, **merchant directory** with 10 merchants) |
+| **Output** | 5 fields: `ACTION`, `BENEFICIARY`, `AMOUNT`, `CHANNEL`, `CONFIDENCE` |
 | **Memory** | None — stateless, single-shot |
 | **Trust level** | Low — output is parsed and validated; invalid output triggers retry |
 
@@ -226,9 +227,28 @@ User: "pay ₹5000 to Ramesh via UPI"
   → BENEFICIARY: Ramesh
   → AMOUNT: 5000
   → CHANNEL: UPI
+  → CONFIDENCE: MEDIUM
 ```
 
-The classifier is a **direct `ChatRequest`** (not an AiServices proxy) so we can capture exact input/output token counts for observability.
+```
+User: "pay 1002 to Apollo via UPI"
+  → ACTION: TRANSFER
+  → BENEFICIARY: Apollo Pharmacy    (matched from merchant directory)
+  → AMOUNT: 1002
+  → CHANNEL: UPI
+  → CONFIDENCE: MEDIUM
+```
+
+```
+User: "send 200 to Priya"
+  → ACTION: TRANSFER
+  → BENEFICIARY: Priya Sharma
+  → AMOUNT: 200
+  → CHANNEL: UNKNOWN    (user didn't specify → channel picker shown)
+  → CONFIDENCE: MEDIUM
+```
+
+The `IntentClassifier` is a **direct `ChatRequest`** (not an AiServices proxy) so we can capture exact input/output token counts for observability. Its context includes both the **user registry** and **merchant directory** (Chai Point, Reliance Fresh, Apollo Pharmacy, BookMyShow, etc.) — beneficiary matching prioritises merchants, then users.
 
 ### Role 2: Fraud Agent (Stage 2 — transactional only)
 
@@ -249,7 +269,7 @@ FraudAgentOrchestrator.analyze(userId, userIntent, amount, channel)
   → BLOCK → short-circuit pipeline (skip Stages 3–4)
 ```
 
-The Fraud Agent has its own `@SystemMessage` encoding the action thresholds (≥0.95 APPROVE, 0.80–0.95 MONITOR, <0.80 ESCALATE, hardblock signals BLOCK — all configurable via `FraudConfig`). A deterministic fallback runs if the LLM fails.
+The Fraud Agent has its own `@SystemMessage` encoding the action thresholds (<0.30 APPROVE, 0.30–0.49 MONITOR, 0.50–0.69 ESCALATE, ≥0.70 BLOCK, hardblock signals BLOCK — all configurable via `FraudConfig`). Risk scoring is **additive** (baseline 0.02, higher = riskier). A deterministic fallback runs if the LLM fails.
 
 ### Role 3: Tool Orchestrator (Stage 3)
 
@@ -334,7 +354,7 @@ User: "What are the NEFT settlement timings?"
 │  ┌─────────────┐   ┌───────────────┐   ┌─────────────────────┐     │
 │  │  Stage 1     │   │  Stage 2       │   │  Stage 3             │     │
 │  │  CLASSIFY    │──▶│  FRAUD DETECT  │──▶│  EXECUTE             │     │
-│  │  (LLM Call)  │   │  (Fraud Agent) │   │  (Deterministic Java)│     │
+│  │(Classifier)  │   │  (Fraud Agent) │   │  (Deterministic Java)│     │
 │  └──────┬───────┘   └──────┬────────┘   └──────┬──────────────┘     │
 │         │                  │                    │                    │
 │  ┌──────▼───────┐   ┌──────▼────────┐   ┌──────▼──────────────┐    │
@@ -343,11 +363,11 @@ User: "What are the NEFT settlement timings?"
 │  │ BENEFICIARY  │   │ • Risk score  │   │ • receiveFunds      │    │
 │  │ AMOUNT       │   │ • Action:     │   │ • switchMandate     │    │
 │  │ CHANNEL      │   │   APPROVE /   │   │ • checkBalance      │    │
-│  └──────────────┘   │   MONITOR /   │   │ • recentTransactions│    │
-│                     │   ESCALATE /  │   │ • searchTransactions│    │
-│                     │   BLOCK       │   └─────────────────────┘    │
-│                     └───────────────┘          │                    │
-│                                         ┌──────▼──────────────┐    │
+│  │ CONFIDENCE   │   │   MONITOR /   │   │ • recentTransactions│    │
+│  │ (+ user &    │   │   ESCALATE /  │   │ • searchTransactions│    │
+│  │  merchant    │   │   BLOCK       │   └─────────────────────┘    │
+│  │  context)    │   └───────────────┘          │                    │
+│  └──────────────┘                       ┌──────▼──────────────┐    │
 │                                         │  Stage 4: FORMAT    │    │
 │                                         │  (LLM streaming)    │    │
 │                                         └─────────────────────┘    │
@@ -364,7 +384,7 @@ User: "What are the NEFT settlement timings?"
 
 | Stage | What Happens | LLM Involved? |
 |-------|-------------|----------------|
-| **Stage 1: Classify** | LLM reads user intent → outputs 4 fields: ACTION, BENEFICIARY, AMOUNT, CHANNEL | ✅ Single LLM call |
+| **Stage 1: Classify** | `IntentClassifier` reads user intent with user + merchant context → outputs 5 fields: ACTION, BENEFICIARY, AMOUNT, CHANNEL, CONFIDENCE. CHANNEL=UNKNOWN triggers channel picker. Merchant names resolved against 10-merchant directory | ✅ Single LLM call |
 | **Stage 2: Fraud Detection** | `FraudAgentOrchestrator` runs dedicated LangChain4j Fraud Agent with `@Tool` methods → risk score → APPROVE/MONITOR/ESCALATE/BLOCK | ✅ Separate LLM agent (transactional only) |
 | **Stage 3: Execute** | `DeterministicToolExecutor` dispatches to `@Tool` method → `MongoLedgerService` ACID commit | ❌ Pure Java |
 | **Stage 4: Format** | `StreamingSupervisor` formats tool result as natural language, streamed token-by-token | ✅ LLM streaming |
@@ -447,7 +467,7 @@ Voyage AI provides the **semantic understanding layer** — converting text into
 
 | Capability | How It's Used |
 |-----------|---------------|
-| **RAG Knowledge** | 7 RBI payment channel documents embedded into `rag_knowledge` collection |
+| **RAG Knowledge** | 8 RBI payment channel + merchant directory documents embedded into `rag_knowledge` collection |
 | **Temporal Memory** | Each conversation turn embedded for later semantic recall |
 | **Behavioral Telemetry** | Device/biometric signals vectorized for fraud baseline matching |
 

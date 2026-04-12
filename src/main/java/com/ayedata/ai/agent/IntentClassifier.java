@@ -1,5 +1,6 @@
 package com.ayedata.ai.agent;
 
+import com.ayedata.init.MerchantDirectoryInitializer;
 import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.service.AccountBalanceService;
 import dev.langchain4j.model.chat.request.ChatRequest;
@@ -119,6 +120,11 @@ public class IntentClassifier {
                 sb.append(entry.getValue()).append(", ");
             }
         }
+        Map<String, String> merchants = MerchantDirectoryInitializer.getMerchantRegistry();
+        if (!merchants.isEmpty()) {
+            sb.append("\nMerchants: ");
+            sb.append(String.join(", ", merchants.values()));
+        }
         try {
             double balance = accountBalanceService.getCurrentBalance(userId);
             sb.append("\nBalance: ₹").append(String.format("%.0f", balance));
@@ -142,12 +148,13 @@ public class IntentClassifier {
         return """
             Classify the payment request. Reply with EXACTLY these five lines, nothing else:
             ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
-            BENEFICIARY: person name or none
+            BENEFICIARY: person or merchant name from context, or none
             AMOUNT: number or 0
             CHANNEL: one of [%s] or UNKNOWN
             CONFIDENCE: HIGH or MEDIUM or LOW
 
             Rules:
+            - BENEFICIARY: match the name against the Merchants list first, then the Users list. Use the full registered name (e.g. "Apollo" → "Apollo Pharmacy").
             - CHANNEL must be EXACTLY one of: %s, or UNKNOWN. Never invent channel names.
             - If the user EXPLICITLY names a channel (e.g. "via UPI", "through NEFT", "using UPI Lite"), return that exact channel.
             - If the user does NOT explicitly mention a channel name, ALWAYS return CHANNEL: UNKNOWN. The system will auto-select the optimal channel based on the amount. Do NOT guess a channel.

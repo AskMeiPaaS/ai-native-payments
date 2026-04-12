@@ -35,15 +35,18 @@ public class FraudAgentOrchestrator {
     private final OllamaChatModel chatModel;
     private final FraudTools fraudTools;
     private final FraudSignalAnalyzer fraudSignalAnalyzer;
+    private final FraudConfig fraudConfig;
 
     private FraudAgent fraudAgent;
 
     public FraudAgentOrchestrator(OllamaChatModel chatModel,
                                   FraudTools fraudTools,
-                                  FraudSignalAnalyzer fraudSignalAnalyzer) {
+                                  FraudSignalAnalyzer fraudSignalAnalyzer,
+                                  FraudConfig fraudConfig) {
         this.chatModel = chatModel;
         this.fraudTools = fraudTools;
         this.fraudSignalAnalyzer = fraudSignalAnalyzer;
+        this.fraudConfig = fraudConfig;
     }
 
     @PostConstruct
@@ -52,7 +55,7 @@ public class FraudAgentOrchestrator {
                 .chatModel(chatModel)
                 .chatMemoryProvider(memId -> MessageWindowChatMemory.builder()
                         .id(memId)
-                        .maxMessages(4)
+                        .maxMessages(fraudConfig.getAgentMemoryWindow())
                         .build())
                 .tools(fraudTools)
                 .build();
@@ -111,7 +114,7 @@ public class FraudAgentOrchestrator {
             return deterministicFallback(sessionId, userId, intent, amount, beneficiary, channel);
         }
 
-        FraudAction action = FraudAction.valueOf(decisionMatcher.group(1).toUpperCase());
+        FraudAction llmDecision = FraudAction.valueOf(decisionMatcher.group(1).toUpperCase());
         double riskScore = Double.parseDouble(riskMatcher.group(1));
         riskScore = Math.max(0.0, Math.min(1.0, riskScore));
 
@@ -124,6 +127,13 @@ public class FraudAgentOrchestrator {
                         .filter(s -> !s.isEmpty())
                         .toList();
             }
+        }
+
+        // Enforce threshold rules — never trust LLM decision blindly
+        FraudAction action = fraudSignalAnalyzer.determineFraudAction(riskScore, signals);
+        if (action != llmDecision) {
+            log.warn("⚠️ LLM decision {} overridden to {} (risk={}, signals={})",
+                    llmDecision, action, riskScore, signals);
         }
 
         double behavioralScore = fraudSignalAnalyzer.getBehavioralSimilarityScore(sessionId, userId);

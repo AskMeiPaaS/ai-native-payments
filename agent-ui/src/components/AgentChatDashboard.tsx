@@ -463,11 +463,13 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                 // Heartbeat — keep the wait message updated with elapsed time
                 if (currentEventName === 'heartbeat' && jsonData.elapsed !== undefined) {
                   setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === waitMsgId
-                        ? { ...msg, content: `⏳ Thinking... (${jsonData.elapsed}s)` }
-                        : msg
-                    )
+                    prev.map((msg) => {
+                      if (msg.id !== waitMsgId) return msg;
+                      const lines = msg.stageLines ?? [];
+                      const heartbeatLine = `⏳ Thinking... (${jsonData.elapsed}s)`;
+                      const content = [...lines, heartbeatLine].filter(Boolean).join('\n');
+                      return { ...msg, content };
+                    })
                   );
                   continue;
                 }
@@ -688,7 +690,11 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                   setMessages((prev) =>
                     prev.map((msg) => {
                       if (msg.id === waitMsgId) {
-                        return { ...msg, content: jsonData.message, status: 'sent' as const };
+                        const lines = msg.stageLines ?? [];
+                        const content = lines.length > 0
+                          ? [...lines, jsonData.message].filter(Boolean).join('\n')
+                          : jsonData.message;
+                        return { ...msg, content, status: 'sent' as const };
                       }
                       if (msg.role === 'user' && msg.content === userMessage) {
                         return { ...msg, status: 'delivered' as const };

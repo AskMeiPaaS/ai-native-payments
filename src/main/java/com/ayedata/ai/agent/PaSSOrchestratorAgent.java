@@ -380,7 +380,8 @@ public class PaSSOrchestratorAgent {
                 if (fraudResult.action() == FraudAction.ESCALATE) {
                     String escalationId = hitlEscalationService.freezeStateAndEscalate(sessionId,
                             String.format("Fraud risk score %.2f below threshold. Signals: %s",
-                                    fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+                                    fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())),
+                            userId, intent.amount(), intent.beneficiary(), intent.channel(), intent.action());
                     return String.format(
                             "TRANSACTION_ESCALATED: This transaction has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f. A compliance officer will review and decide within the SLA window.",
                             escalationId, fraudResult.riskScore());
@@ -557,7 +558,8 @@ public class PaSSOrchestratorAgent {
             if (fraudResult.action() == FraudAction.ESCALATE) {
                 String escalationId = hitlEscalationService.freezeStateAndEscalate(sessionId,
                         String.format("Fraud risk score %.2f below threshold. Signals: %s",
-                                fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+                                fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())),
+                        userId, intent.amount(), intent.beneficiary(), intent.channel(), intent.action());
                 fraudData.put("escalated", true);
                 fraudData.put("escalationId", escalationId);
                 stageCallback.accept("fraud_analyzed", fraudData);

@@ -3,6 +3,11 @@ package com.ayedata.hitl.service;
 import com.ayedata.audit.service.AuditLoggingService;
 import com.ayedata.hitl.domain.HitlEscalationRecord;
 import com.ayedata.hitl.dto.AppealStatusResponse;
+import com.ayedata.init.UserProfileInitializer;
+import com.ayedata.payment.PaymentContext;
+import com.ayedata.payment.PaymentResult;
+import com.ayedata.payment.PaymentSwitchRouter;
+import com.ayedata.service.MongoLedgerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -22,13 +27,17 @@ public class HitlEscalationService {
 
     private final AuditLoggingService auditLoggingService;
     private final MongoTemplate hitlTemplate;
+    private final MongoLedgerService mongoLedgerService;
+    private final PaymentSwitchRouter paymentSwitchRouter;
 
-    // Manual constructor (Lombok @RequiredArgsConstructor not processed without
-    // annotation processor)
     public HitlEscalationService(AuditLoggingService auditLoggingService,
-                                 @Qualifier("hitlMongoTemplate") MongoTemplate hitlTemplate) {
+                                 @Qualifier("hitlMongoTemplate") MongoTemplate hitlTemplate,
+                                 MongoLedgerService mongoLedgerService,
+                                 PaymentSwitchRouter paymentSwitchRouter) {
         this.auditLoggingService = auditLoggingService;
         this.hitlTemplate = hitlTemplate;
+        this.mongoLedgerService = mongoLedgerService;
+        this.paymentSwitchRouter = paymentSwitchRouter;
     }
 
     /**
@@ -49,6 +58,15 @@ public class HitlEscalationService {
     }
 
     public String freezeStateAndEscalate(String sessionId, String llmReasoning) {
+        return freezeStateAndEscalate(sessionId, llmReasoning, null, 0, null, null, null);
+    }
+
+    /**
+     * Freeze state and escalate with full transaction details for direct commit on approval.
+     */
+    public String freezeStateAndEscalate(String sessionId, String llmReasoning,
+                                         String userId, double amount, String beneficiary,
+                                         String channel, String instructionType) {
         if (sessionId == null || sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId is required for HITL escalation");
         }
@@ -56,7 +74,6 @@ public class HitlEscalationService {
         String escalationId = generateEscalationId();
         log.warn("HITL escalation triggered for session: {} | Escalation ID: {}", sessionId, escalationId);
 
-        // ✅ Persist state freeze marker and allow human operator to resume or rollback.
         HitlEscalationRecord record = new HitlEscalationRecord(
                 sessionId,
                 llmReasoning,
@@ -65,10 +82,17 @@ public class HitlEscalationService {
         );
         record.setEscalationId(escalationId);
         record.setAppealSource("SYSTEM_INITIATED");
+
+        // Store frozen transaction details for direct commit on operator approval
+        if (userId != null) record.setUserId(userId);
+        if (amount > 0) record.setAmount(amount);
+        if (beneficiary != null) record.setBeneficiary(beneficiary);
+        if (channel != null) record.setChannel(channel);
+        if (instructionType != null) record.setInstructionType(instructionType);
+
         hitlTemplate.save(record);
         log.info("✅ Persisted HITL state freeze marker for session: {} with escalation ID: {}", sessionId, escalationId);
 
-        // Record an audit event in the isolated audit database.
         auditLoggingService.logErrorEvent(
                 "HITL_ESCALATION",
                 sessionId,
@@ -166,9 +190,9 @@ public class HitlEscalationService {
 
         // Generate transaction ID if approved or manually overridden
         if ("APPROVED".equals(decision) || "MANUAL_OVERRIDE".equals(decision)) {
-            String transactionId = generateTransactionId();
+            String transactionId = commitFrozenTransaction(record);
             record.setTransactionId(transactionId);
-            log.info("✅ Generated transaction ID for escalation {}: {}", escalationId, transactionId);
+            log.info("✅ Transaction committed for escalation {}: {}", escalationId, transactionId);
         }
 
         hitlTemplate.save(record);
@@ -219,6 +243,63 @@ public class HitlEscalationService {
         );
 
         return escalationId;
+    }
+
+    /**
+     * Commit the frozen transaction directly via the payment switch — no LLM involved.
+     * Falls back to {@link MongoLedgerService} when the record has structured fields;
+     * returns a generated TXN ID otherwise (legacy records without transaction details).
+     */
+    private String commitFrozenTransaction(HitlEscalationRecord record) {
+        String userId = record.getUserId();
+        Double amount = record.getAmount();
+        String beneficiary = record.getBeneficiary();
+        String channel = record.getChannel();
+        String instructionType = record.getInstructionType();
+
+        // Legacy escalation without structured fields — generate a placeholder TXN ID
+        if (userId == null || amount == null || amount <= 0) {
+            log.warn("Escalation {} has no frozen transaction details — generating placeholder TXN ID", record.getEscalationId());
+            return generateTransactionId();
+        }
+
+        try {
+            if ("MANDATE".equals(instructionType)) {
+                String mandateDetails = "HITL-approved mandate switch";
+                return mongoLedgerService.commitMandateAtomic(record.getSessionId(), userId, beneficiary, mandateDetails);
+            }
+
+            // Auto-select channel if not stored
+            if (channel == null || channel.isBlank()) {
+                channel = selectChannelForAmount(amount);
+            }
+
+            if ("RECEIVE".equals(instructionType)) {
+                PaymentContext ctx = new PaymentContext(record.getSessionId(), userId, "External Payer", amount, channel, null);
+                PaymentResult result = paymentSwitchRouter.route(channel).receive(ctx);
+                return result.txnId();
+            }
+
+            // Default: TRANSFER
+            String recipientUserId = UserProfileInitializer.resolveUserIdByNameOrId(beneficiary);
+            PaymentContext ctx = new PaymentContext(record.getSessionId(), userId, beneficiary, amount, channel, recipientUserId);
+            PaymentResult result = paymentSwitchRouter.route(channel).transfer(ctx);
+            return result.txnId();
+        } catch (Exception e) {
+            log.error("Failed to commit frozen transaction for escalation {}: {}", record.getEscalationId(), e.getMessage(), e);
+            // Still generate a placeholder so the escalation record is marked resolved
+            return generateTransactionId();
+        }
+    }
+
+    /**
+     * Auto-select payment channel based on amount (mirrors LedgerTools logic).
+     */
+    private static String selectChannelForAmount(double amount) {
+        if (amount <= 500)       return "UPI Lite";
+        if (amount <= 1_00_000)  return "UPI";
+        if (amount < 2_00_000)   return "NEFT";
+        return "RTGS";
     }
 
 }

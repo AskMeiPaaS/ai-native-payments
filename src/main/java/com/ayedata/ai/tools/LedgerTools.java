@@ -183,7 +183,8 @@ public class LedgerTools {
         if (fraudResult.action() == FraudAction.ESCALATE) {
             String escalationId = hitlEscalationService.freezeStateAndEscalate(memoryId,
                     String.format("Transfer ₹%.2f to %s — fraud risk score %.2f. Signals: %s",
-                            amount, beneficiary, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+                            amount, beneficiary, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())),
+                    userId, amount, beneficiary, targetBank, "TRANSFER");
             return String.format(
                     "TRANSFER_ESCALATED: This transfer has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f.",
                     escalationId, fraudResult.riskScore());
@@ -261,7 +262,8 @@ public class LedgerTools {
         if (fraudResult.action() == FraudAction.ESCALATE) {
             String escalationId = hitlEscalationService.freezeStateAndEscalate(memoryId,
                     String.format("Receive ₹%.2f — fraud risk score %.2f. Signals: %s",
-                            amount, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+                            amount, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())),
+                    userId, amount, "External Payer", channel, "RECEIVE");
             return String.format(
                     "RECEIVE_ESCALATED: This transaction has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f.",
                     escalationId, fraudResult.riskScore());
@@ -361,7 +363,8 @@ public class LedgerTools {
         if (fraudResult.action() == FraudAction.ESCALATE) {
             String escalationId = hitlEscalationService.freezeStateAndEscalate(memoryId,
                     String.format("Mandate switch to %s — fraud risk score %.2f. Signals: %s",
-                            bankName, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())));
+                            bankName, fraudResult.riskScore(), String.join(", ", fraudResult.fraudSignals())),
+                    userId, 0, bankName, null, "MANDATE");
             return String.format(
                     "MANDATE_ESCALATED: This mandate switch has been escalated to a human operator for review (Escalation ID: %s). Risk score: %.2f.",
                     escalationId, fraudResult.riskScore());

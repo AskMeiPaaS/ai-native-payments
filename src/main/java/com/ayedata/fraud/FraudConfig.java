@@ -13,7 +13,7 @@ public class FraudConfig {
     @Value("${app.fraud.high-value-threshold:5000}")
     private double highValueThreshold;
 
-    @Value("${app.fraud.multiplier.high-value:0.8}")
+    @Value("${app.fraud.multiplier.high-value:0.92}")
     private double multiplierHighValue;
 
     @Value("${app.fraud.multiplier.geo-anomaly:0.7}")
@@ -34,9 +34,6 @@ public class FraudConfig {
     @Value("${app.fraud.threshold.escalate:0.65}")
     private double thresholdEscalate;
 
-    @Value("${app.fraud.threshold.block:0.65}")
-    private double thresholdBlock;
-
     @Value("${app.fraud.baseline-score:0.95}")
     private double baselineScore;
 
@@ -49,6 +46,27 @@ public class FraudConfig {
     @Value("${app.fraud.behavioral.min-transactions:3}")
     private int behavioralMinTransactions;
 
+    @Value("${app.fraud.behavioral.query-limit:50}")
+    private int behavioralQueryLimit;
+
+    @Value("${app.fraud.behavioral.cv-divisor:2.0}")
+    private double behavioralCvDivisor;
+
+    @Value("${app.fraud.behavioral.frequency-norm:2.0}")
+    private double behavioralFrequencyNorm;
+
+    @Value("${app.fraud.behavioral.weight-amount:0.6}")
+    private double behavioralWeightAmount;
+
+    @Value("${app.fraud.behavioral.weight-frequency:0.4}")
+    private double behavioralWeightFrequency;
+
+    @Value("${app.fraud.rag-top-k:2}")
+    private int fraudRagTopK;
+
+    @Value("${app.fraud.agent-memory-window:4}")
+    private int agentMemoryWindow;
+
     public double getHighValueThreshold() { return highValueThreshold; }
     public double getMultiplierHighValue() { return multiplierHighValue; }
     public double getMultiplierGeoAnomaly() { return multiplierGeoAnomaly; }
@@ -57,10 +75,16 @@ public class FraudConfig {
     public double getThresholdApprove() { return thresholdApprove; }
     public double getThresholdMonitor() { return thresholdMonitor; }
     public double getThresholdEscalate() { return thresholdEscalate; }
-    public double getThresholdBlock() { return thresholdBlock; }
     public double getBaselineScore() { return baselineScore; }
     public int getBehavioralLookbackDays() { return behavioralLookbackDays; }
     public int getBehavioralMinTransactions() { return behavioralMinTransactions; }
+    public int getBehavioralQueryLimit() { return behavioralQueryLimit; }
+    public double getBehavioralCvDivisor() { return behavioralCvDivisor; }
+    public double getBehavioralFrequencyNorm() { return behavioralFrequencyNorm; }
+    public double getBehavioralWeightAmount() { return behavioralWeightAmount; }
+    public double getBehavioralWeightFrequency() { return behavioralWeightFrequency; }
+    public int getFraudRagTopK() { return fraudRagTopK; }
+    public int getAgentMemoryWindow() { return agentMemoryWindow; }
 
     public Set<String> getHardblockSignals() {
         return Arrays.stream(hardblockSignalsCsv.split(","))

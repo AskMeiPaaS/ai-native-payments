@@ -40,7 +40,7 @@ public class FraudSignalAnalyzer {
     }
 
     public String retrieveFraudPatterns(String intent) {
-        return ragService.retrieveContext("fraud detection " + intent, 2);
+        return ragService.retrieveContext("fraud detection " + intent, fraudConfig.getFraudRagTopK());
     }
 
     public double getBehavioralSimilarityScore(String sessionId, String userId) {
@@ -57,7 +57,7 @@ public class FraudSignalAnalyzer {
                     .and("createdAt").gte(lookbackStart)
                     .and("status").in("COMPLETED", "SUCCESS", "SETTLED"))
                     .with(Sort.by(Sort.Direction.DESC, "createdAt"))
-                    .limit(50);
+                    .limit(fraudConfig.getBehavioralQueryLimit());
 
             List<TransactionRecord> history = mongoTemplate.find(query, TransactionRecord.class);
 
@@ -110,14 +110,14 @@ public class FraudSignalAnalyzer {
             } else {
                 // Coefficient of variation: lower = more consistent
                 double cv = stdDevAmount / avgAmount;
-                amountConsistency = Math.max(0.0, 1.0 - (cv / 2.0)); // cv=2 → score=0
+                amountConsistency = Math.max(0.0, 1.0 - (cv / fraudConfig.getBehavioralCvDivisor()));
             }
 
             // Frequency consistency: penalize if very infrequent (< 0.5/week)
-            double frequencyScore = Math.min(1.0, txnsPerWeek / 2.0);
+            double frequencyScore = Math.min(1.0, txnsPerWeek / fraudConfig.getBehavioralFrequencyNorm());
 
             // Weighted composite
-            double behavioralScore = (amountConsistency * 0.6) + (frequencyScore * 0.4);
+            double behavioralScore = (amountConsistency * fraudConfig.getBehavioralWeightAmount()) + (frequencyScore * fraudConfig.getBehavioralWeightFrequency());
             behavioralScore = Math.max(0.0, Math.min(1.0, behavioralScore));
 
             log.debug("Behavioral score for userId={}: {} (avgAmt={}, stdDev={}, txns/wk={}, channel={})",
@@ -135,15 +135,20 @@ public class FraudSignalAnalyzer {
                                             double amount, String beneficiary, String channel) {
         List<String> signals = new ArrayList<>();
 
-        if (fraudContext.toLowerCase().contains("velocity check") && amount > fraudConfig.getHighValueThreshold()) {
+        // HIGH_VALUE_TRANSACTION: triggered by transaction amount alone — RAG context
+        // only confirms that velocity/amount monitoring is a known policy concern.
+        if (amount > fraudConfig.getHighValueThreshold()) {
             signals.add("HIGH_VALUE_TRANSACTION");
         }
-        if (fraudContext.toLowerCase().contains("geo-anomaly")) {
-            signals.add("GEO_ANOMALY_DETECTED");
-        }
-        if (fraudContext.toLowerCase().contains("new device")) {
-            signals.add("NEW_DEVICE_PATTERN");
-        }
+
+        // GEO_ANOMALY_DETECTED and NEW_DEVICE_PATTERN require actual session telemetry
+        // (device fingerprint, IP geolocation) which is not available in the current
+        // deterministic path. The RAG knowledge base always mentions these terms as
+        // policy descriptions, so matching on RAG text would incorrectly block every
+        // transaction. These signals should only be injected by the LLM Fraud Agent
+        // when it has access to real-time session context, or by a future telemetry
+        // integration layer.
+
         if (fraudContext.toLowerCase().contains("time-of-day") &&
             userIntent.toLowerCase().matches(".*(?:midnight|dawn|late night).*")) {
             signals.add("UNUSUAL_TIMING");

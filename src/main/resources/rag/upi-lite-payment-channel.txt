@@ -40,7 +40,7 @@ Availability:
 - Supported apps: Google Pay, PhonePe, Paytm, BHIM UPI, and major bank UPI apps
 
 Use Cases (Best-Fit Scenarios):
-- Canteen / cafeteria payments under ₹500
+- payments under ₹500
 - Auto-rickshaw / metro / bus tap-to-pay fares
 - Vending machine payments
 - Small grocery / kirana store purchases

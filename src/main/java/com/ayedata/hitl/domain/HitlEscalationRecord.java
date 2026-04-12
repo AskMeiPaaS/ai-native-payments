@@ -20,6 +20,13 @@ public class HitlEscalationRecord {
     private String operatorNotes;       // Resolution notes from operator
     private Instant resolvedAt;         // WHEN it was resolved
     private String appealSource;        // USER_INITIATED or SYSTEM_INITIATED
+
+    // ── Frozen transaction details for direct commit on approval ──
+    private String userId;              // sender userId
+    private Double amount;              // transaction amount in INR
+    private String beneficiary;         // beneficiary name / UPI ID / account number
+    private String channel;             // payment channel (UPI, NEFT, RTGS, etc.)
+    private String instructionType;     // TRANSFER, RECEIVE, or MANDATE
     
     public HitlEscalationRecord() {}
 
@@ -63,4 +70,19 @@ public class HitlEscalationRecord {
 
     public String getAppealSource() { return appealSource; }
     public void setAppealSource(String appealSource) { this.appealSource = appealSource; }
+
+    public String getUserId() { return userId; }
+    public void setUserId(String userId) { this.userId = userId; }
+
+    public Double getAmount() { return amount; }
+    public void setAmount(Double amount) { this.amount = amount; }
+
+    public String getBeneficiary() { return beneficiary; }
+    public void setBeneficiary(String beneficiary) { this.beneficiary = beneficiary; }
+
+    public String getChannel() { return channel; }
+    public void setChannel(String channel) { this.channel = channel; }
+
+    public String getInstructionType() { return instructionType; }
+    public void setInstructionType(String instructionType) { this.instructionType = instructionType; }
 }

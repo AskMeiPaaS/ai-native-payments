@@ -2,6 +2,8 @@ package com.ayedata.hitl.service;
 
 import com.ayedata.audit.service.AuditLoggingService;
 import com.ayedata.hitl.domain.HitlEscalationRecord;
+import com.ayedata.payment.PaymentSwitchRouter;
+import com.ayedata.service.MongoLedgerService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -26,6 +28,12 @@ class HitlEscalationServiceTest {
 
     @Mock
     private MongoTemplate hitlTemplate;
+
+    @Mock
+    private MongoLedgerService mongoLedgerService;
+
+    @Mock
+    private PaymentSwitchRouter paymentSwitchRouter;
 
     @InjectMocks
     private HitlEscalationService hitlEscalationService;

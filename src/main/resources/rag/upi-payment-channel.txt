@@ -4,7 +4,7 @@ Overview:
 UPI is India's real-time mobile payment system developed by NPCI (National Payments Corporation of India), regulated by RBI. It enables instant peer-to-peer (P2P) and peer-to-merchant (P2M) fund transfers 24x7x365 using a Virtual Payment Address (VPA). Two-factor authentication via UPI PIN ensures transaction security.
 
 Transaction Limits (as of 2024–2025):
-- Standard P2P transfer: ₹1,00,000 per transaction
+- Standard P2P transfer:from 1 to ₹1,00,000 per transaction
 - Verified merchant (P2M) payments: ₹2,00,000 per transaction (since April 2020)
 - Capital markets / insurance / foreign inward remittances: ₹2,00,000 per transaction
 - IPO subscriptions / RBI Retail Direct: ₹5,00,000 per transaction

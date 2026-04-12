@@ -729,11 +729,13 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           : msg
                       );
                     } else {
-                      // Create new streaming message (first chunk) — carry over stageChannel + fraud
+                      // Create new streaming message (first chunk) — carry over stageChannel + fraud + channelOptions
                       const waitMsg2 = prev.find((m) => m.id === waitMsgId);
                       const inheritedChannel = waitMsg2?.stageChannel;
                       const inheritedFraudScore = waitMsg2?.fraudScore;
                       const inheritedFraudAction = waitMsg2?.fraudAction;
+                      const inheritedChannelOptions = waitMsg2?.channelOptions;
+                      const inheritedOriginalIntent = waitMsg2?.originalIntent;
                       return [
                         ...prev.filter((m) => m.id !== waitMsgId),
                         {
@@ -743,6 +745,7 @@ export default function AgentChatDashboard({ userId, userProfile, onLogout }: Ag
                           timestamp: new Date(),
                           ...(inheritedChannel ? { channel: inheritedChannel } : {}),
                           ...(inheritedFraudScore !== undefined ? { fraudScore: inheritedFraudScore, fraudAction: inheritedFraudAction } : {}),
+                          ...(inheritedChannelOptions ? { channelOptions: inheritedChannelOptions, originalIntent: inheritedOriginalIntent } : {}),
                         },
                       ];
                     }

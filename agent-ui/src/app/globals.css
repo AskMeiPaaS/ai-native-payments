@@ -746,7 +746,7 @@ a:hover { opacity: 0.8; }
   border: 1px solid var(--border);
   overflow: hidden;
   font-size: 0.82rem;
-  max-width: 540px;
+  max-width: 72%;
 }
 .stage-banner__header {
   padding: var(--space-2) var(--space-3);

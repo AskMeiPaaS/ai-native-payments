@@ -1,9 +1,11 @@
 package com.ayedata.ai.tools;
 
+import com.ayedata.init.MerchantDirectoryInitializer;
 import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.payment.PaymentContext;
 import com.ayedata.payment.PaymentResult;
 import com.ayedata.payment.PaymentSwitchRouter;
+import com.ayedata.rag.service.RagService;
 import com.ayedata.service.AccountBalanceService;
 import com.ayedata.fraud.FraudAction;
 import com.ayedata.fraud.FraudAgentOrchestrator;
@@ -50,6 +52,7 @@ public class LedgerTools {
     private final PaymentSwitchRouter paymentSwitchRouter;
     private final MongoLedgerService mongoLedgerService;
     private final AccountBalanceService accountBalanceService;
+    private final RagService ragService;
     private final MongoTemplate mongoTemplate;
     private final MongoTemplate memoryMongoTemplate;
 
@@ -74,6 +77,7 @@ public class LedgerTools {
                        PaymentSwitchRouter paymentSwitchRouter,
                        MongoLedgerService mongoLedgerService,
                        AccountBalanceService accountBalanceService,
+                       RagService ragService,
                        @Qualifier("primaryMongoTemplate") MongoTemplate mongoTemplate,
                        @Qualifier("memoryMongoTemplate") MongoTemplate memoryMongoTemplate) {
         this.fraudAgentOrchestrator = fraudAgentOrchestrator;
@@ -81,6 +85,7 @@ public class LedgerTools {
         this.paymentSwitchRouter = paymentSwitchRouter;
         this.mongoLedgerService = mongoLedgerService;
         this.accountBalanceService = accountBalanceService;
+        this.ragService = ragService;
         this.mongoTemplate = mongoTemplate;
         this.memoryMongoTemplate = memoryMongoTemplate;
     }
@@ -191,8 +196,31 @@ public class LedgerTools {
         }
 
         try {
-            // Resolve beneficiary to a registered user for P2P credit
-            String recipientUserId = UserProfileInitializer.resolveUserIdByNameOrId(beneficiary);
+            // Check if beneficiary is a merchant — skip user resolution entirely for merchant payments
+            String recipientUserId = null;
+            if (!isMerchantBeneficiary(beneficiary)) {
+                // Resolve beneficiary via RAG reranker first, fall back to static resolver
+                try {
+                    var ragMatches = ragService.resolveUserByRag(beneficiary, 1);
+                    if (!ragMatches.isEmpty()) {
+                        recipientUserId = ragMatches.get(0).userId();
+                        log.info("Beneficiary '{}' resolved via RAG reranker → {} (score={})",
+                                beneficiary, recipientUserId, String.format("%.2f", ragMatches.get(0).score()));
+                    }
+                } catch (Exception e) {
+                    log.debug("RAG beneficiary resolution failed, falling back to static: {}", e.getMessage());
+                }
+
+                // Static fallback when RAG is unavailable or returned no match
+                if (recipientUserId == null) {
+                    recipientUserId = UserProfileInitializer.resolveUserIdByNameOrId(beneficiary);
+                    if (recipientUserId != null) {
+                        log.info("Beneficiary '{}' resolved via static fallback → {}", beneficiary, recipientUserId);
+                    }
+                }
+            } else {
+                log.info("Beneficiary '{}' identified as merchant — skipping user resolution", beneficiary);
+            }
 
             // Block self-transfers
             if (recipientUserId != null && recipientUserId.equalsIgnoreCase(userId)) {
@@ -325,6 +353,24 @@ public class LedgerTools {
         }
 
         return null; // channel and amount are compatible
+    }
+
+    /**
+     * Check if a beneficiary string matches a registered merchant (by id or name).
+     * Used to short-circuit RAG user resolution for merchant payments.
+     */
+    private boolean isMerchantBeneficiary(String beneficiary) {
+        if (beneficiary == null || beneficiary.isBlank()) return false;
+        String lower = beneficiary.trim().toLowerCase();
+        Map<String, String> merchants = MerchantDirectoryInitializer.getMerchantRegistry();
+        for (var entry : merchants.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(lower)
+                    || entry.getValue().toLowerCase().contains(lower)
+                    || lower.contains(entry.getValue().toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

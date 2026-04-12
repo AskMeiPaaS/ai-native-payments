@@ -12,7 +12,7 @@ import java.util.Map;
 
 /**
  * Deterministic tool execution engine — dispatches {@code @Tool} methods based on
- * a {@link PaSSOrchestratorAgent.ParsedIntent} without LLM involvement.
+ * a {@link ParsedIntent} without LLM involvement.
  *
  * <p>This class provides a fast, reliable, and fully auditable execution path:
  * <ul>
@@ -52,7 +52,7 @@ public class DeterministicToolExecutor {
      * @param userIntent  the original user message (used for query filter building)
      * @return the tool result string, or {@code null} if the action is unrecognised
      */
-    public String executeToolDirectly(String sessionId, PaSSOrchestratorAgent.ParsedIntent intent, String userIntent) {
+    public String executeToolDirectly(String sessionId, ParsedIntent intent, String userIntent) {
         String toolName;
         Map<String, Object> args = new LinkedHashMap<>();
 

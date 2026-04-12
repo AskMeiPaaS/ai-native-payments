@@ -39,6 +39,10 @@ public class RagService {
 
     private static final Logger log = LoggerFactory.getLogger(RagService.class);
     public static final String COLLECTION = "rag_knowledge";
+    public static final String USER_PROFILE_ID_PREFIX = "user-profile-";
+
+    /** Result of RAG-based user resolution: userId, displayName, and reranker confidence score. */
+    public record UserMatch(String userId, String displayName, double score) {}
 
     private final EmbeddingModel embeddingModel;
     private final ScoringModel scoringModel;
@@ -141,6 +145,75 @@ public class RagService {
         } catch (Exception e) {
             log.debug("RAG retrieval skipped (degraded mode): {}", e.getMessage());
             return "";
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // User resolution via RAG + reranker
+    // -----------------------------------------------------------------------
+
+    /**
+     * Resolve a beneficiary query to the best-matching registered user(s) via
+     * vector search + Voyage AI reranking. Only documents whose {@code _id}
+     * starts with {@link #USER_PROFILE_ID_PREFIX} are considered.
+     *
+     * @param query Free-text beneficiary reference (name, partial name, account number, etc.)
+     * @param topK  Maximum number of matches to return
+     * @return Ranked list of {@link UserMatch} (best first); empty if Atlas is unavailable
+     */
+    public List<UserMatch> resolveUserByRag(String query, int topK) {
+        try {
+            float[] queryVector = embeddingModel.embed(TextSegment.from(query)).content().vector();
+            List<Document> candidates = vectorSearchKnowledge(queryVector, 20);
+
+            // Post-filter to user profile documents only
+            List<Document> userDocs = candidates.stream()
+                    .filter(d -> {
+                        Object id = d.get("_id");
+                        return id != null && id.toString().startsWith(USER_PROFILE_ID_PREFIX);
+                    })
+                    .collect(Collectors.toList());
+
+            if (userDocs.isEmpty()) {
+                log.debug("RAG: no user profile candidates for query '{}'",
+                        TextUtils.truncateWithEllipsis(query, 80));
+                return List.of();
+            }
+
+            // Rerank user profiles against the query
+            List<TextSegment> segments = userDocs.stream()
+                    .map(d -> TextSegment.from(TextUtils.nullToEmpty(d.getString("content"))))
+                    .collect(Collectors.toList());
+
+            List<Double> scores = scoringModel.scoreAll(segments, query).content();
+
+            List<UserMatch> matches = IntStream.range(0, userDocs.size())
+                    .boxed()
+                    .sorted((i, j) -> Double.compare(scores.get(j), scores.get(i)))
+                    .limit(topK)
+                    .filter(i -> scores.get(i) > 0.0)
+                    .map(i -> {
+                        Document doc = userDocs.get(i);
+                        String docId = Objects.toString(doc.get("_id"), "");
+                        String userId = docId.substring(USER_PROFILE_ID_PREFIX.length());
+                        String title = TextUtils.nullToEmpty(doc.getString("title"));
+                        String displayName = title.startsWith("User Profile — ")
+                                ? title.substring("User Profile — ".length())
+                                : userId;
+                        return new UserMatch(userId, displayName, scores.get(i));
+                    })
+                    .collect(Collectors.toList());
+
+            log.info("RAG user resolution: query='{}' → {} match(es), top={}(score={})",
+                    TextUtils.truncateWithEllipsis(query, 40),
+                    matches.size(),
+                    matches.isEmpty() ? "none" : matches.get(0).userId(),
+                    matches.isEmpty() ? 0.0 : String.format("%.2f", matches.get(0).score()));
+            return matches;
+
+        } catch (Exception e) {
+            log.debug("RAG user resolution skipped (degraded mode): {}", e.getMessage());
+            return List.of();
         }
     }
 

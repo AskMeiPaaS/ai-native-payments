@@ -59,11 +59,38 @@ public class RagKnowledgeSeeder {
             "rag/payment-routing-risk-matrix.txt"},
         new String[]{"indian-payment-regulatory-framework",
             "Indian Payment Systems Regulatory Framework",
-            "rag/indian-payment-regulatory-framework.txt"}
+            "rag/indian-payment-regulatory-framework.txt"},
+        // ── Merchant Directory RAG document ──
+        new String[]{"merchant-directory-guide",
+            "PaSS Merchant Directory — Verified Merchant Payment Guide",
+            "rag/merchant-directory-guide.txt"}
+    );
+
+    /**
+     * Per-user profile documents generated from demo-users.json at seeding time.
+     * Each document id is prefixed with {@code user-profile-} so the RAG reranker
+     * can filter them during beneficiary resolution.
+     */
+    private static final List<String[]> USER_PROFILE_DOCUMENTS = List.of(
+        new String[]{"user-profile-user001",
+            "User Profile — Arjun Kumar",
+            "Registered user: Arjun Kumar. User ID: user001. Account Number: 1001-2001-3001. Email: arjun.kumar@example.com. Phone: +91-98765-43210. Also known as: Arjun."},
+        new String[]{"user-profile-user002",
+            "User Profile — Priya Sharma",
+            "Registered user: Priya Sharma. User ID: user002. Account Number: 1002-2002-3002. Email: priya.sharma@example.com. Phone: +91-87654-32109. Also known as: Priya."},
+        new String[]{"user-profile-user003",
+            "User Profile — Rahul Patel",
+            "Registered user: Rahul Patel. User ID: user003. Account Number: 1003-2003-3003. Email: rahul.patel@example.com. Phone: +91-76543-21098. Also known as: Rahul."},
+        new String[]{"user-profile-user004",
+            "User Profile — Kavya Singh",
+            "Registered user: Kavya Singh. User ID: user004. Account Number: 1004-2004-3004. Email: kavya.singh@example.com. Phone: +91-65432-10987. Also known as: Kavya."},
+        new String[]{"user-profile-user005",
+            "User Profile — Amit Verma",
+            "Registered user: Amit Verma. User ID: user005. Account Number: 1005-2005-3005. Email: amit.verma@example.com. Phone: +91-54321-09876. Also known as: Amit."}
     );
 
     /** Expected total after seeding — used for the skip-if-complete check. */
-    private static final int EXPECTED_DOC_COUNT = DOCUMENTS.size();
+    private static final int EXPECTED_DOC_COUNT = DOCUMENTS.size() + USER_PROFILE_DOCUMENTS.size();
 
     public RagKnowledgeSeeder(RagService ragService) {
         this.ragService = ragService;
@@ -99,6 +126,12 @@ public class RagKnowledgeSeeder {
                     seeded++;
                 }
             }
+            // Seed user profile documents for RAG-based beneficiary resolution
+            for (String[] doc : USER_PROFILE_DOCUMENTS) {
+                ragService.ingestDocument(doc[0], doc[1], doc[2]);
+                seeded++;
+            }
+
             log.info("✅ RAG knowledge base seeded with {} documents (total now {}).",
                      seeded, EXPECTED_DOC_COUNT);
         } catch (Exception e) {

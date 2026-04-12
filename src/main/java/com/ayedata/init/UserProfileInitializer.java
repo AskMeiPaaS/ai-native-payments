@@ -62,8 +62,19 @@ public class UserProfileInitializer {
         log.info("👤 Seeding demo user profiles...");
         int created = 0;
         for (DemoUser demo : demoUsers) {
-            if (primaryTemplate.findById(demo.userId(), UserProfile.class) != null) {
-                log.debug("  ↳ User {} already exists, skipping.", demo.userId());
+            UserProfile existing = primaryTemplate.findById(demo.userId(), UserProfile.class);
+            if (existing != null) {
+                // Fix profiles auto-created by AccountBalanceService with default names
+                if ("Demo Customer".equals(existing.getDisplayName())) {
+                    existing.setDisplayName(demo.displayName());
+                    existing.setEmail(demo.email());
+                    existing.setPhone(demo.phone());
+                    primaryTemplate.save(existing);
+                    log.info("  🔄 Updated demo user {} with seed data (was 'Demo Customer').", demo.userId());
+                    created++;
+                } else {
+                    log.debug("  ↳ User {} already exists, skipping.", demo.userId());
+                }
                 continue;
             }
             UserProfile profile = buildProfile(demo);

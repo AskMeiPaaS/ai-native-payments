@@ -6,14 +6,9 @@ import com.ayedata.fraud.FraudAction;
 import com.ayedata.fraud.FraudAgentOrchestrator;
 import com.ayedata.fraud.FraudAnalysisResult;
 import com.ayedata.hitl.service.HitlEscalationService;
-import com.ayedata.init.UserProfileInitializer;
-import com.ayedata.service.AccountBalanceService;
 import com.ayedata.service.TemporalMemoryService;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
-import dev.langchain4j.model.chat.request.ChatRequest;
-import dev.langchain4j.model.chat.response.ChatResponse;
-import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.ollama.OllamaStreamingChatModel;
 import dev.langchain4j.service.AiServices;
@@ -26,20 +21,16 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.function.BiConsumer;
-import java.util.stream.Collectors;
 
 /**
  * PaSS Orchestrator Agent: Supervisor backed by MongoDB chat memory,
@@ -66,12 +57,7 @@ public class PaSSOrchestratorAgent {
     private final MongoChatMemoryStore chatMemoryStore;
     private final ContextEnricher contextEnricher;
     private final TemporalMemoryService temporalMemoryService;
-    private final AccountBalanceService accountBalanceService;
-
-    /** Well-defined payment channels from env (e.g. "UPI Lite,UPI,NEFT,RTGS,IMPS,Cheque"). */
-    private final List<String> supportedChannels;
-    /** Upper-cased set for fast validation of classifier output. */
-    private final Set<String> supportedChannelsUpper;
+    private final IntentClassifier classifier;
 
     private Supervisor supervisor;
     private StreamingSupervisor streamingSupervisor;
@@ -99,8 +85,7 @@ public class PaSSOrchestratorAgent {
                                  MongoChatMemoryStore chatMemoryStore,
                                  ContextEnricher contextEnricher,
                                  TemporalMemoryService temporalMemoryService,
-                                 AccountBalanceService accountBalanceService,
-                                 @Value("${app.payment.channels:UPI Lite,UPI,NEFT,RTGS,IMPS,Cheque}") String channelsCsv) {
+                                 IntentClassifier classifier) {
         this.ledgerTools = ledgerTools;
         this.fraudAgentOrchestrator = fraudAgentOrchestrator;
         this.hitlEscalationService = hitlEscalationService;
@@ -109,11 +94,7 @@ public class PaSSOrchestratorAgent {
         this.chatMemoryStore = chatMemoryStore;
         this.contextEnricher = contextEnricher;
         this.temporalMemoryService = temporalMemoryService;
-        this.accountBalanceService = accountBalanceService;
-        this.supportedChannels = Arrays.stream(channelsCsv.split(","))
-                .map(String::trim).filter(s -> !s.isEmpty()).toList();
-        this.supportedChannelsUpper = supportedChannels.stream()
-                .map(String::toUpperCase).collect(Collectors.toSet());
+        this.classifier = classifier;
     }
 
     private static final String SYSTEM_PROMPT = """
@@ -150,44 +131,6 @@ public class PaSSOrchestratorAgent {
 
     // ── Two-fold orchestration: Step 1 classifier, Step 3 formatter ──
 
-    /**
-     * Build a dynamic classifier prompt that includes the well-defined channel list
-     * from the PAYMENT_CHANNELS env var. The LLM MUST return one of these or UNKNOWN.
-     */
-    private String buildClassifierPrompt() {
-        String channelList = String.join(", ", supportedChannels);
-        return """
-            Classify the payment request. Reply with EXACTLY these five lines, nothing else:
-            ACTION: TRANSFER or RECEIVE or MANDATE or QUERY_BALANCE or QUERY_TRANSACTIONS or QUERY_SEARCH or QUERY
-            BENEFICIARY: person name or none
-            AMOUNT: number or 0
-            CHANNEL: one of [%s] or UNKNOWN
-            CONFIDENCE: HIGH or MEDIUM or LOW
-
-            Rules:
-            - CHANNEL must be EXACTLY one of: %s. Never invent channel names.
-            - If the user explicitly names a channel (e.g. "via UPI", "through NEFT"), return that channel.
-            - If the user does NOT specify a channel, return CHANNEL: UNKNOWN.
-            - When a person's name appears in a query, use QUERY_SEARCH with BENEFICIARY set to that person.
-            - Use QUERY_TRANSACTIONS for listing/filtering transactions without a specific person.
-            - Use QUERY_BALANCE only for balance inquiries with no person mentioned.
-            - CONFIDENCE: HIGH only for general questions unrelated to payments/banking.
-            - CONFIDENCE: MEDIUM when at least the action is clear (TRANSFER, RECEIVE, QUERY_BALANCE, QUERY_TRANSACTIONS, QUERY_SEARCH).
-            - CONFIDENCE: LOW when the request is vague or unclear.
-
-            Examples:
-            - "what is my balance" → ACTION: QUERY_BALANCE, CONFIDENCE: MEDIUM
-            - "show my UPI debits" → ACTION: QUERY_TRANSACTIONS, CONFIDENCE: MEDIUM
-            - "how much I owe to Priya" → ACTION: QUERY_SEARCH, BENEFICIARY: Priya, CONFIDENCE: MEDIUM
-            - "pay 5000 to Ramesh via UPI" → ACTION: TRANSFER, AMOUNT: 5000, BENEFICIARY: Ramesh, CHANNEL: UPI, CONFIDENCE: MEDIUM
-            - "receive 10000" → ACTION: RECEIVE, AMOUNT: 10000, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
-            - "send money to Ramesh" → ACTION: TRANSFER, BENEFICIARY: Ramesh, AMOUNT: 0, CHANNEL: UNKNOWN, CONFIDENCE: LOW
-            - "hello, how are you" → ACTION: QUERY, CONFIDENCE: HIGH
-            - "what is PaSS" → ACTION: QUERY, CONFIDENCE: HIGH
-            - "transfer 2000 to Priya" → ACTION: TRANSFER, AMOUNT: 2000, BENEFICIARY: Priya, CHANNEL: UNKNOWN, CONFIDENCE: MEDIUM
-            """.formatted(channelList, channelList);
-    }
-
     private static final String FORMATTER_PROMPT = """
             You are PaSS, an Indian banking payment assistant.
             The [TOOL RESULT] section shows the outcome of a payment tool that was already executed.
@@ -200,23 +143,6 @@ public class PaSSOrchestratorAgent {
     interface FormattingSupervisor {
         @SystemMessage(FORMATTER_PROMPT)
         TokenStream format(@UserMessage String contextWithResult);
-    }
-
-    record ParsedIntent(String action, String beneficiary, double amount, String channel, String confidence) {
-        boolean isTransfer()       { return "TRANSFER".equals(action); }
-        boolean isReceive()        { return "RECEIVE".equals(action); }
-        boolean isMandate()        { return "MANDATE".equals(action); }
-        boolean isQueryBalance()   { return "QUERY_BALANCE".equals(action); }
-        boolean isQueryTxns()      { return "QUERY_TRANSACTIONS".equals(action); }
-        boolean isQuerySearch()    { return "QUERY_SEARCH".equals(action); }
-        boolean isTransactional()  { return isTransfer() || isReceive() || isMandate(); }
-        boolean isQueryTool()      { return isQueryBalance() || isQueryTxns() || isQuerySearch(); }
-        boolean isHighConfidence() { return "HIGH".equalsIgnoreCase(confidence); }
-    }
-
-    /** Wraps classifier raw text output together with Step 1 token usage. */
-    record ClassificationResult(String raw, int inputTokens, int outputTokens) {
-        int totalTokens() { return inputTokens + outputTokens; }
     }
 
     @PostConstruct
@@ -338,24 +264,26 @@ public class PaSSOrchestratorAgent {
 
         ledgerTools.registerSession(sessionId, userId);
         try {
-            // Step 1: Classify
-            String classifierCtx = buildClassifierContext(userId, userIntent);
-            ParsedIntent intent;
-            try {
-                ClassificationResult cr = classifyWithRetry(sessionId, classifierCtx);
-                log.info("Session {}: Classifier → {} (step1 tokens: in={} out={})",
-                        sessionId, cr.raw().replace("\n", " | "), cr.inputTokens(), cr.outputTokens());
-                intent = parseClassification(cr.raw());
-            } catch (Exception e) {
-                log.warn("Session {}: Classification failed after retries, falling back to supervisor", sessionId, e);
-                String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
-                return supervisor.orchestrate(sessionId, enrichedIntent);
+            // Check if this is a channel follow-up for a pending intent
+            ParsedIntent intent = classifier.checkPendingChannelIntent(sessionId, userIntent);
+
+            if (intent == null) {
+                // Step 1: Classify
+                try {
+                    IntentClassifier.ClassificationResult cr = classifier.classify(sessionId, userId, userIntent);
+                    intent = cr.intent();
+                } catch (Exception e) {
+                    log.warn("Session {}: Classification failed after retries, falling back to supervisor", sessionId, e);
+                    String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
+                    return supervisor.orchestrate(sessionId, enrichedIntent);
+                }
             }
 
             // Channel clarification: if transactional and channel is UNKNOWN, ask user
             if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
-                log.info("Session {}: Channel not specified — asking user to confirm", sessionId);
-                String channelList = String.join(", ", supportedChannels);
+                log.info("Session {}: Channel not specified — caching intent and asking user to confirm", sessionId);
+                classifier.cachePendingIntent(sessionId, intent);
+                String channelList = String.join(", ", classifier.getSupportedChannels());
                 return String.format(
                     "I need to know which payment channel to use. Please reply with one of: %s.\n" +
                     "For example: \"via UPI\" or \"use NEFT\".", channelList);
@@ -455,33 +383,47 @@ public class PaSSOrchestratorAgent {
 
         ledgerTools.registerSession(sessionId, userId);
 
+        // ── Check if this is a channel follow-up for a pending intent ──
+        ParsedIntent intent = classifier.checkPendingChannelIntent(sessionId, userIntent);
+        boolean needsFraud;
+        int totalSteps;
+        int stepOffset;
+
+        if (intent != null) {
+            needsFraud = intent.isTransactional();
+            boolean willBeDeterministic = !intent.isHighConfidence() && (intent.isTransactional() || intent.isQueryTool());
+            totalSteps = willBeDeterministic ? (needsFraud ? 4 : 3) : (needsFraud ? 3 : 2);
+            stepOffset = needsFraud ? 1 : 0;
+
+            Map<String, Object> classifiedData = new java.util.LinkedHashMap<>();
+            classifiedData.put("message", IntentClassifier.formatClassifiedMessage(intent));
+            classifiedData.put("step", 1);
+            classifiedData.put("totalSteps", totalSteps);
+            classifiedData.put("action", intent.action());
+            classifiedData.put("amount", intent.amount());
+            classifiedData.put("beneficiary", intent.beneficiary());
+            classifiedData.put("channel", intent.channel());
+            classifiedData.put("confidence", intent.confidence());
+            classifiedData.put("channelMerged", true);
+            stageCallback.accept("classified", classifiedData);
+        } else {
         // ── Step 1: Intent classification via LangChain4j (lightweight LLM call) ──
         stageCallback.accept("classifying", Map.of(
                 "message", "Step 1 · Classifying your intent...",
                 "step", 1, "totalSteps", 3));
 
-        String classifierCtx = buildClassifierContext(userId, userIntent);
-        ParsedIntent intent;
-        boolean needsFraud;
-        int totalSteps;
-        int stepOffset;
         try {
-            log.info("Session {}: Step 1 — classifying intent ({} chars)...", sessionId, classifierCtx.length());
-            ClassificationResult cr = classifyWithRetry(sessionId, classifierCtx);
-            log.info("Session {}: Classifier output: {} (step1 tokens: in={} out={})",
-                    sessionId, cr.raw().replace("\n", " | "), cr.inputTokens(), cr.outputTokens());
-            intent = parseClassification(cr.raw());
-            log.info("Session {}: Parsed → action={} beneficiary={} amount={} channel={} confidence={}",
-                    sessionId, intent.action(), intent.beneficiary(), intent.amount(), intent.channel(), intent.confidence());
+            IntentClassifier.ClassificationResult cr = classifier.classify(sessionId, userId, userIntent);
+            intent = cr.intent();
 
             // Compute total steps based on path: transactional intents get a fraud stage
             needsFraud = intent.isTransactional();
             boolean willBeDeterministic = !intent.isHighConfidence() && (intent.isTransactional() || intent.isQueryTool());
             totalSteps = willBeDeterministic ? (needsFraud ? 4 : 3) : (needsFraud ? 3 : 2);
-            stepOffset = needsFraud ? 1 : 0; // shifts execute/format steps when fraud is present
+            stepOffset = needsFraud ? 1 : 0;
 
             Map<String, Object> classifiedData = new java.util.LinkedHashMap<>();
-            classifiedData.put("message", formatClassifiedMessage(intent));
+            classifiedData.put("message", IntentClassifier.formatClassifiedMessage(intent));
             classifiedData.put("step", 1);
             classifiedData.put("totalSteps", totalSteps);
             classifiedData.put("action", intent.action());
@@ -501,16 +443,18 @@ public class PaSSOrchestratorAgent {
             String enrichedIntent = contextEnricher.buildEnrichedIntent(sessionId, userIntent, userId);
             return streamingSupervisor.orchestrate(sessionId, enrichedIntent);
         }
+        }
 
         // ── Channel clarification: ask user to pick when channel is UNKNOWN ──
         if (intent.isTransactional() && "UNKNOWN".equalsIgnoreCase(intent.channel())) {
-            log.info("Session {}: Channel UNKNOWN — sending channel_required to frontend", sessionId);
+            log.info("Session {}: Channel UNKNOWN — caching intent and sending channel_required to frontend", sessionId);
+            classifier.cachePendingIntent(sessionId, intent);
             Map<String, Object> channelData = new java.util.LinkedHashMap<>();
             channelData.put("message", "Please select a payment channel to proceed.");
-            channelData.put("channels", supportedChannels);
+            channelData.put("channels", classifier.getSupportedChannels());
             stageCallback.accept("channel_required", channelData);
 
-            String channelList = String.join(", ", supportedChannels);
+            String channelList = String.join(", ", classifier.getSupportedChannels());
             return new SyntheticTokenStream(String.format(
                 "I need to know which payment channel to use for this transaction. " +
                 "Please choose one: %s.", channelList));
@@ -663,151 +607,5 @@ public class PaSSOrchestratorAgent {
                 archiveSemaphore.release();
             }
         });
-    }
-
-    // ── Two-fold helpers ──
-
-    /** Max retries for Step 1 intent classification (Ollama can be flaky on CPU). */
-    private static final int CLASSIFIER_MAX_RETRIES = 1;
-    /** Backoff between classification retries (ms). */
-    private static final long CLASSIFIER_RETRY_DELAY_MS = 2000;
-
-    /**
-     * Classify with retry — attempts {@code CLASSIFIER_MAX_RETRIES + 1} calls
-     * to the LLM before giving up. Calls the model directly (bypassing the
-     * AiServices proxy) so we can capture Step 1 token usage.
-     */
-    private ClassificationResult classifyWithRetry(String sessionId, String classifierCtx) {
-        Exception lastException = null;
-        for (int attempt = 0; attempt <= CLASSIFIER_MAX_RETRIES; attempt++) {
-            try {
-                if (attempt > 0) {
-                    log.info("Session {}: Classifier retry {}/{} after {}ms backoff",
-                            sessionId, attempt, CLASSIFIER_MAX_RETRIES, CLASSIFIER_RETRY_DELAY_MS);
-                    Thread.sleep(CLASSIFIER_RETRY_DELAY_MS);
-                }
-                ChatRequest req = ChatRequest.builder()
-                        .messages(List.of(
-                                dev.langchain4j.data.message.SystemMessage.from(buildClassifierPrompt()),
-                                dev.langchain4j.data.message.UserMessage.from(classifierCtx)))
-                        .build();
-                ChatResponse resp = chatLanguageModel.chat(req);
-                TokenUsage tu = resp.tokenUsage();
-                int in  = (tu != null && tu.inputTokenCount()  != null) ? tu.inputTokenCount()  : 0;
-                int out = (tu != null && tu.outputTokenCount() != null) ? tu.outputTokenCount() : 0;
-                return new ClassificationResult(resp.aiMessage().text(), in, out);
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                throw new RuntimeException("Classification interrupted", ie);
-            } catch (Exception e) {
-                lastException = e;
-                log.warn("Session {}: Classifier attempt {} failed: {}",
-                        sessionId, attempt + 1, e.getMessage());
-            }
-        }
-        throw new RuntimeException("Classification failed after " + (CLASSIFIER_MAX_RETRIES + 1) + " attempts", lastException);
-    }
-
-    /**
-     * Build a compact context for the intent classifier (Step 1).
-     * Includes registered users, current balance, last 3 transactions,
-     * and the raw request — kept concise for the 3B model.
-     */
-    private String buildClassifierContext(String userId, String userIntent) {
-        Map<String, String> registry = UserProfileInitializer.getDemoUserRegistry();
-        StringBuilder sb = new StringBuilder();
-        sb.append("Users: ");
-        for (var entry : registry.entrySet()) {
-            if (!entry.getKey().equals(userId)) {
-                sb.append(entry.getValue()).append(", ");
-            }
-        }
-
-        // Balance — helps classify "can I afford..." / "how much do I have"
-        try {
-            double balance = accountBalanceService.getCurrentBalance(userId);
-            sb.append("\nBalance: ₹").append(String.format("%.0f", balance));
-        } catch (Exception ignored) { }
-
-        // Last 3 transactions — helps classify "did I pay X" / "show history"
-        try {
-            var txns = accountBalanceService.getRecentTransactionSummary(userId, 3);
-            if (!txns.isEmpty()) {
-                sb.append("\nRecent: ").append(String.join("; ", txns));
-            }
-        } catch (Exception ignored) { }
-
-        sb.append("\nRequest: ").append(userIntent);
-        return sb.toString();
-    }
-
-    /**
-     * Parse the classifier's structured text output into a {@link ParsedIntent}.
-     * Tolerant of extra whitespace and minor formatting variations.
-     */
-    private ParsedIntent parseClassification(String raw) {
-        String action = "QUERY";
-        String beneficiary = "none";
-        double amount = 0;
-        String channel = "UNKNOWN";
-        String confidence = "HIGH";
-
-        // Normalize: models sometimes emit comma-separated key: value pairs
-        // on a single line instead of separate lines.
-        String normalized = raw.replaceAll("(?i),\\s*(?=(?:ACTION|BENEFICIARY|AMOUNT|CHANNEL|CONFIDENCE):)", "\n");
-
-        for (String line : normalized.split("\n")) {
-            line = line.trim();
-            if (line.toUpperCase().startsWith("ACTION:")) {
-                action = line.substring(7).trim().toUpperCase();
-            } else if (line.toUpperCase().startsWith("BENEFICIARY:")) {
-                beneficiary = line.substring(12).trim();
-            } else if (line.toUpperCase().startsWith("AMOUNT:")) {
-                try {
-                    amount = Double.parseDouble(line.substring(7).trim().replaceAll("[^0-9.]", ""));
-                } catch (NumberFormatException ignored) { }
-            } else if (line.toUpperCase().startsWith("CHANNEL:")) {
-                String rawCh = line.substring(8).trim();
-                // Validate against supported channels; treat "auto"/"auto-select" as UNKNOWN
-                if ("auto".equalsIgnoreCase(rawCh) || "auto-select".equalsIgnoreCase(rawCh)
-                        || "unknown".equalsIgnoreCase(rawCh) || rawCh.isBlank()) {
-                    channel = "UNKNOWN";
-                } else if (supportedChannelsUpper.contains(rawCh.toUpperCase())) {
-                    // Map back to the canonical casing from supportedChannels
-                    channel = supportedChannels.stream()
-                            .filter(c -> c.equalsIgnoreCase(rawCh))
-                            .findFirst().orElse(rawCh);
-                } else {
-                    log.warn("Classifier returned unrecognised channel '{}' — treating as UNKNOWN", rawCh);
-                    channel = "UNKNOWN";
-                }
-            } else if (line.toUpperCase().startsWith("CONFIDENCE:")) {
-                confidence = line.substring(11).trim().toUpperCase();
-            }
-        }
-
-        return new ParsedIntent(action, beneficiary, amount, channel, confidence);
-    }
-
-    /** Format a human-readable stage message from a classified intent. */
-    private static String formatClassifiedMessage(ParsedIntent intent) {
-        if (intent.isQueryTool()) {
-            return switch (intent.action()) {
-                case "QUERY_BALANCE"      -> "Step 1 · Checking your account balance";
-                case "QUERY_TRANSACTIONS" -> "Step 1 · Fetching your recent transactions";
-                case "QUERY_SEARCH"       -> "Step 1 · Searching transactions for " + intent.beneficiary();
-                default                   -> "Step 1 · Classified as: " + intent.action();
-            };
-        }
-        if (!intent.isTransactional() || intent.amount() <= 0) {
-            return "Step 1 · Classified as: " + intent.action();
-        }
-        String channel = "UNKNOWN".equalsIgnoreCase(intent.channel()) ? "pending" : intent.channel();
-        return switch (intent.action()) {
-            case "TRANSFER" -> String.format("Step 1 · Transfer ₹%.0f to %s (%s)", intent.amount(), intent.beneficiary(), channel);
-            case "RECEIVE"  -> String.format("Step 1 · Receive ₹%.0f (%s)", intent.amount(), channel);
-            case "MANDATE"  -> "Step 1 · Mandate switch for " + intent.beneficiary();
-            default -> "Step 1 · " + intent.action();
-        };
     }
 }

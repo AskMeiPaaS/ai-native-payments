@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import ThemeToggle from './sidebar/ThemeToggle';
 
 interface DemoUser {
   userId: string;
@@ -97,6 +98,10 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             ))}
           </div>
         )}
+
+        <div className="login-theme-toggle">
+          <ThemeToggle />
+        </div>
 
         <p className="login-footer">
           ⚠️ Demo only — for reference purposes only. Not for production use.

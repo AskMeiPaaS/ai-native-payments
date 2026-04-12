@@ -1,5 +1,6 @@
 package com.ayedata.ai.agent;
 
+import com.ayedata.init.MerchantDirectoryInitializer;
 import com.ayedata.init.UserProfileInitializer;
 import com.ayedata.rag.service.RagService;
 import com.ayedata.service.AccountBalanceService;
@@ -80,7 +81,7 @@ public class ContextEnricher {
                 DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm z").withZone(ZoneId.of("Asia/Kolkata"))
                         .format(Instant.now())).append("\n\n");
 
-        // 0b. Registered users — so LLM knows who can be a beneficiary
+        // 0b. Registered users — RAG reranker picks the best matches, static fallback
         Map<String, String> accountRegistry = UserProfileInitializer.getDemoAccountRegistry();
         // Invert: userId → accountNumber for easy lookup
         Map<String, String> userToAccount = new java.util.HashMap<>();
@@ -88,7 +89,35 @@ public class ContextEnricher {
             userToAccount.put(entry.getValue(), entry.getKey());
         }
 
-        if (!registry.isEmpty()) {
+        boolean usedRagUsers = false;
+        try {
+            var ragMatches = ragService.resolveUserByRag(userIntent, 5);
+            if (!ragMatches.isEmpty()) {
+                sb.append("[REGISTERED USERS]\n");
+                sb.append("These are the users in the system (ranked by relevance to the current request). ")
+                  .append("Match the beneficiary name or account number to one of these users:\n");
+                for (var match : ragMatches) {
+                    if (!match.userId().equals(callerUserId)) {
+                        String acct = userToAccount.get(match.userId());
+                        sb.append("- ").append(match.displayName())
+                          .append(" (userId: ").append(match.userId());
+                        if (acct != null) sb.append(", account: ").append(acct);
+                        sb.append(String.format(", relevance: %.2f", match.score()));
+                        sb.append(")\n");
+                    }
+                }
+                sb.append("\n");
+                usedRagUsers = true;
+                log.info("Session {}: [REGISTERED USERS] populated via RAG reranker ({} matches)",
+                        sessionId, ragMatches.size());
+            }
+        } catch (Exception e) {
+            log.debug("Session {}: RAG user resolution unavailable, falling back to static: {}",
+                    sessionId, e.getMessage());
+        }
+
+        // Static fallback when RAG is unavailable or returned no matches
+        if (!usedRagUsers && !registry.isEmpty()) {
             sb.append("[REGISTERED USERS]\n");
             sb.append("These are the users in the system. When the user wants to pay someone, ")
               .append("match the beneficiary name or account number to one of these users:\n");
@@ -104,9 +133,23 @@ public class ContextEnricher {
                 }
             }
             sb.append("\n");
+            log.info("Session {}: [REGISTERED USERS] populated via static fallback", sessionId);
         }
 
-        // 0c. Account state — balance + recent transactions so LLM can answer inline
+        // 0c. Registered merchants — so LLM can match merchant payments
+        Map<String, String> merchantRegistry = MerchantDirectoryInitializer.getMerchantRegistry();
+        if (!merchantRegistry.isEmpty()) {
+            sb.append("[REGISTERED MERCHANTS]\n");
+            sb.append("These are verified merchants in the system. When the user wants to pay a merchant, ")
+              .append("match the beneficiary name to one of these:\n");
+            for (var entry : merchantRegistry.entrySet()) {
+                sb.append("- ").append(entry.getValue())
+                  .append(" (merchantId: ").append(entry.getKey()).append(")\n");
+            }
+            sb.append("\n");
+        }
+
+        // 0d. Account state — balance + recent transactions so LLM can answer inline
         try {
             double balance = accountBalanceService.getCurrentBalance(callerUserId);
             String callerAcct = userToAccount.get(callerUserId);

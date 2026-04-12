@@ -1,0 +1,104 @@
+PaSS Merchant Directory — Verified Merchant Payment Guide
+
+Overview:
+The PaSS merchant directory contains verified Indian merchants across multiple categories.
+When a user requests a payment to a merchant, match the beneficiary name to one of these
+registered merchants. Use the merchant's supported channels and transaction limits to route
+the payment correctly. All merchants are RBI-compliant and verified for UPI, NEFT, RTGS,
+or IMPS transactions as applicable.
+
+Registered Merchants:
+
+1. Chai Point (merchant001)
+   - Category: Food & Beverage | MCC: 5812
+   - UPI VPA: chaipoint@upi
+   - Supported Channels: UPI Lite, UPI
+   - Max Transaction Limit: ₹500
+   - Location: Bengaluru, Karnataka
+   - Note: Small-value merchant — UPI Lite eligible for transactions up to ₹500.
+
+2. Reliance Fresh (merchant002)
+   - Category: Grocery | MCC: 5411
+   - UPI VPA: reliancefresh@ybl
+   - Supported Channels: UPI Lite, UPI, NEFT
+   - Max Transaction Limit: ₹1,00,000
+   - Location: Mumbai, Maharashtra
+   - Note: Large grocery chain. UPI Lite for small purchases, UPI/NEFT for bulk orders.
+
+3. Apollo Pharmacy (merchant003)
+   - Category: Healthcare | MCC: 5912
+   - UPI VPA: apollopharmacy@paytm
+   - Supported Channels: UPI Lite, UPI, NEFT
+   - Max Transaction Limit: ₹50,000
+   - Location: Chennai, Tamil Nadu
+   - Note: Healthcare merchant — supports UPI Lite for OTC purchases.
+
+4. BookMyShow (merchant004)
+   - Category: Entertainment | MCC: 7922
+   - UPI VPA: bookmyshow@icici
+   - Supported Channels: UPI, NEFT
+   - Max Transaction Limit: ₹10,000
+   - Location: Mumbai, Maharashtra
+   - Note: Entertainment ticketing — UPI Lite not supported.
+
+5. Indian Oil IOCL (merchant005)
+   - Category: Fuel | MCC: 5541
+   - UPI VPA: iocl@sbi
+   - Supported Channels: UPI Lite, UPI
+   - Max Transaction Limit: ₹25,000
+   - Location: Delhi
+   - Note: Fuel station payments — UPI Lite suitable for small refuelling amounts.
+
+6. Flipkart Online (merchant006)
+   - Category: E-Commerce | MCC: 5999
+   - UPI VPA: flipkart@axisbank
+   - Supported Channels: UPI, NEFT, RTGS
+   - Max Transaction Limit: ₹5,00,000
+   - Location: Bengaluru, Karnataka
+   - Note: High-value e-commerce. RTGS available for orders above ₹2,00,000.
+
+7. Ola Cabs (merchant007)
+   - Category: Transport | MCC: 4121
+   - UPI VPA: olacabs@upi
+   - Supported Channels: UPI Lite, UPI
+   - Max Transaction Limit: ₹5,000
+   - Location: Bengaluru, Karnataka
+   - Note: Ride-hailing — UPI Lite ideal for typical cab fares.
+
+8. Tata Power (merchant008)
+   - Category: Utilities | MCC: 4900
+   - UPI VPA: tatapower@hdfcbank
+   - Supported Channels: UPI, NEFT, RTGS
+   - Max Transaction Limit: ₹1,00,000
+   - Location: Mumbai, Maharashtra
+   - Note: Utility bill payments — NEFT/RTGS for large commercial bills.
+
+9. Decathlon Sports (merchant009)
+   - Category: Retail | MCC: 5941
+   - UPI VPA: decathlon@ybl
+   - Supported Channels: UPI, NEFT
+   - Max Transaction Limit: ₹75,000
+   - Location: Hyderabad, Telangana
+   - Note: Sporting goods retail — UPI for in-store, NEFT for bulk purchases.
+
+10. MakeMyTrip (merchant010)
+    - Category: Travel | MCC: 4722
+    - UPI VPA: makemytrip@icici
+    - Supported Channels: UPI, NEFT, RTGS
+    - Max Transaction Limit: ₹10,00,000
+    - Location: Gurugram, Haryana
+    - Note: Travel bookings — RTGS recommended for high-value flight/hotel packages.
+
+Payment Routing Rules for Merchants:
+- If the user specifies a channel, validate it against the merchant's supported channels.
+- If the channel is not supported by the merchant, suggest an alternative from the supported list.
+- For amounts ≤ ₹500 and the merchant supports UPI Lite, prefer UPI Lite (no PIN required).
+- For amounts > ₹2,00,000, use NEFT or RTGS (if merchant supports them).
+- Always verify the payment amount does not exceed the merchant's maxTransactionLimit.
+- If the amount exceeds the limit, inform the user and decline the transaction.
+
+Merchant Matching:
+- When the user says "pay to Reliance" or "Reliance Fresh", match to merchant002.
+- When the user says "pay to Chai Point" or "chai point", match to merchant001.
+- Use fuzzy name matching — "Flipkart", "flipkart online" both match merchant006.
+- Merchant names are case-insensitive for matching purposes.

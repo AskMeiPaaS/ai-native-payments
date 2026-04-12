@@ -2,44 +2,8 @@
    DESIGN TOKENS
    ============================================================ */
 
-/* Dark (default) */
+/* Light (default) */
 :root,
-[data-theme="dark"] {
-  --bg-base:     #0b0b0b;
-  --bg-surface:  #141414;
-  --bg-elevated: #1d1d1d;
-  --bg-hover:    #252525;
-
-  --border:        rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.12);
-
-  --accent:        #13AA52;
-  --accent-hover:  #0f8a42;
-  --accent-dim:    rgba(19, 170, 82, 0.12);
-  --accent-border: rgba(19, 170, 82, 0.28);
-
-  --text:   #ebebeb;
-  --text-2: #888888;
-  --text-3: #555555;
-
-  --success:        #22c55e;
-  --success-bg:     rgba(34, 197, 94, 0.10);
-  --success-border: rgba(34, 197, 94, 0.25);
-
-  --warning:        #f59e0b;
-  --warning-bg:     rgba(245, 158, 11, 0.10);
-  --warning-border: rgba(245, 158, 11, 0.28);
-
-  --danger:        #ef4444;
-  --danger-bg:     rgba(239, 68, 68, 0.10);
-  --danger-border: rgba(239, 68, 68, 0.25);
-
-  --info:        #60a5fa;
-  --info-bg:     rgba(96, 165, 250, 0.10);
-  --info-border: rgba(96, 165, 250, 0.25);
-}
-
-/* Light */
 [data-theme="light"] {
   --bg-base:     #f4f6f8;
   --bg-surface:  #ffffff;
@@ -73,6 +37,42 @@
   --info:        #1e40af;
   --info-bg:     rgba(96, 165, 250, 0.10);
   --info-border: rgba(96, 165, 250, 0.30);
+}
+
+/* Dark */
+[data-theme="dark"] {
+  --bg-base:     #0b0b0b;
+  --bg-surface:  #141414;
+  --bg-elevated: #1d1d1d;
+  --bg-hover:    #252525;
+
+  --border:        rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  --accent:        #13AA52;
+  --accent-hover:  #0f8a42;
+  --accent-dim:    rgba(19, 170, 82, 0.12);
+  --accent-border: rgba(19, 170, 82, 0.28);
+
+  --text:   #ebebeb;
+  --text-2: #888888;
+  --text-3: #555555;
+
+  --success:        #22c55e;
+  --success-bg:     rgba(34, 197, 94, 0.10);
+  --success-border: rgba(34, 197, 94, 0.25);
+
+  --warning:        #f59e0b;
+  --warning-bg:     rgba(245, 158, 11, 0.10);
+  --warning-border: rgba(245, 158, 11, 0.28);
+
+  --danger:        #ef4444;
+  --danger-bg:     rgba(239, 68, 68, 0.10);
+  --danger-border: rgba(239, 68, 68, 0.25);
+
+  --info:        #60a5fa;
+  --info-bg:     rgba(96, 165, 250, 0.10);
+  --info-border: rgba(96, 165, 250, 0.25);
 }
 
 /* Shared */
@@ -1444,7 +1444,7 @@ a:hover { opacity: 0.8; }
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.08);
   animation: slide-up 0.3s var(--ease);
 }
 
@@ -1581,6 +1581,15 @@ a:hover { opacity: 0.8; }
 .login-user-spinner {
   font-size: var(--text-sm);
   flex-shrink: 0;
+}
+
+.login-theme-toggle {
+  display: flex;
+  justify-content: center;
+}
+.login-theme-toggle .theme-btn {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-3);
 }
 
 .login-footer {

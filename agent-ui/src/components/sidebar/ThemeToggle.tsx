@@ -4,10 +4,9 @@ import React, { useState, useEffect } from 'react';
 
 export default function ThemeToggle() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    if (typeof window === 'undefined') return 'dark';
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (typeof window === 'undefined') return 'light';
     const savedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
-    return savedTheme || (prefersDark ? 'dark' : 'light');
+    return savedTheme || 'light';
   });
 
   const applyTheme = (newTheme: 'light' | 'dark') => {
